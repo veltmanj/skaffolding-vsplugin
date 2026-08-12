@@ -110,3 +110,35 @@ Result: exit 0; 125 passed, 0 failed.
 ### Fix implementation commit
 
 `7670e799d74e4e34a34e49ec3706c3d29a675b22`
+
+## Fix Round 2
+
+### Findings addressed
+
+- Reactive `Spring Data R2DBC` and reactive `jOOQ` now render `spring.r2dbc` with database-specific `r2dbc:` URLs instead of `spring.datasource`/JDBC configuration.
+- Reactive Flyway and Liquibase retain the R2DBC driver and add the matching JDBC driver plus migration-specific JDBC URL, user, and password properties.
+- Reactive jOOQ now emits `spring.jooq.sql-dialect` and the R2DBC starter as the minimal build/configuration contract. The concrete `ConnectionFactory`/`DSLContext` adapter belongs to the later generated-template task.
+
+### Tests and commands
+
+```text
+npm run compile
+```
+
+Result: exit 0.
+
+```text
+node --test --test-name-pattern='reactive application|JDBC migration|ConnectionFactory' test/springBootTemplates.test.cjs
+```
+
+Result: exit 0; 4 passed, 0 failed. Coverage includes reactive URLs, Flyway JDBC migration wiring, Liquibase JDBC migration wiring, and reactive jOOQ configuration contract.
+
+```text
+npm test
+```
+
+Result: exit 0; 129 passed, 0 failed.
+
+### Fix implementation commit
+
+`bfdc698b8bf7a2e4a9d48d9c65abbe68541852da`
