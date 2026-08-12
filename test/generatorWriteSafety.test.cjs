@@ -182,7 +182,7 @@ test('scenario packs stop later writes after an earlier file is created', async 
 test('Spring Boot service creation stops when an overwrite picker is dismissed', async () => {
   await reset({
     quickPicks: ['Reactive', 'Maven', 'No', 'None', 'PostgreSQL', 'None', undefined],
-    inputBoxes: ['demo', 'service', 'com.example.demo', '25']
+    inputBoxes: ['3.5.4', 'demo', 'Demo', 'service', 'com.example.demo', '25']
   });
   await fs.mkdir(path.join(state.root, 'service'), { recursive: true });
   await fs.writeFile(path.join(state.root, 'service', 'pom.xml'), 'existing');
@@ -196,7 +196,7 @@ test('Spring Boot service creation stops when an overwrite picker is dismissed',
 test('Spring Boot service creation reports a mixed write sequence', async () => {
   await reset({
     quickPicks: ['Reactive', 'Maven', 'No', 'None', 'PostgreSQL', 'None', 'Overwrite', 'Skip'],
-    inputBoxes: ['demo', 'service', 'com.example.demo', '25']
+    inputBoxes: ['3.5.4', 'demo', 'Demo', 'service', 'com.example.demo', '25']
   });
   const serviceRoot = path.join(state.root, 'service');
   await fs.mkdir(path.join(serviceRoot, 'src/main/resources'), { recursive: true });
@@ -213,7 +213,7 @@ test('Spring Boot service creation reports a mixed write sequence', async () => 
 test('Spring Boot service creation stops later writes after an earlier file is created', async () => {
   await reset({
     quickPicks: ['Reactive', 'Maven', 'No', 'None', 'PostgreSQL', 'None', undefined],
-    inputBoxes: ['demo', 'service', 'com.example.demo', '25']
+    inputBoxes: ['3.5.4', 'demo', 'Demo', 'service', 'com.example.demo', '25']
   });
   const serviceRoot = path.join(state.root, 'service');
   const existingMainClass = path.join(serviceRoot, 'src/main/java/com/example/demo/DemoApplication.java');

@@ -130,7 +130,7 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
     return undefined;
   }
 
-  const aggregateName = await input('Aggregate name', 'Order', validateAggregateName);
+  const aggregateName = await input('Aggregate name', defaultAggregateName(serviceName), validateAggregateName);
   if (!aggregateName) {
     return undefined;
   }
@@ -207,6 +207,10 @@ export function persistenceOptions(stackMode: StackMode): PersistenceLayer[] {
     return ['None', 'Spring Data R2DBC', 'jOOQ'];
   }
   return ['None', 'Hibernate (JPA)', 'Plain JDBC', 'jOOQ', 'QueryDSL (JPA)'];
+}
+
+export function defaultAggregateName(serviceName: string): string {
+  return toPascalCase(serviceName.replace(/-service$/, ''));
 }
 
 async function pick<T extends string>(title: string, options: T[]): Promise<T | undefined> {
@@ -370,9 +374,15 @@ function buildDependencyBlocks(a: SpringServiceAnswers): string {
   }
   if (a.persistenceLayer === 'jOOQ') {
     lines.push(dependencyXml('spring-boot-starter-jooq'));
+    if (a.stackMode === 'Reactive') {
+      lines.push(dependencyXml('spring-boot-starter-data-r2dbc'));
+    }
+  }
+  if (a.persistenceLayer === 'Spring Data R2DBC') {
+    lines.push(dependencyXml('spring-boot-starter-data-r2dbc'));
   }
   if (a.persistenceLayer !== 'None') {
-    lines.push(driverDependencyXml(a.database));
+    lines.push(driverDependencyXml(a.database, a.stackMode === 'Reactive'));
   }
   if (a.migrationTool === 'Flyway') {
     lines.push(dependencyXml('flyway-core', 'org.flywaydb'));
@@ -403,9 +413,15 @@ function buildGradleDependencies(a: SpringServiceAnswers): string {
   }
   if (a.persistenceLayer === 'jOOQ') {
     lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-jooq'));
+    if (a.stackMode === 'Reactive') {
+      lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-data-r2dbc'));
+    }
+  }
+  if (a.persistenceLayer === 'Spring Data R2DBC') {
+    lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-data-r2dbc'));
   }
   if (a.persistenceLayer !== 'None') {
-    lines.push(gradleDependency(driverCoordinate(a.database), 'runtimeOnly'));
+    lines.push(gradleDependency(driverCoordinate(a.database, a.stackMode === 'Reactive'), 'runtimeOnly'));
   }
   if (a.migrationTool === 'Flyway') {
     lines.push(gradleDependency('org.flywaydb:flyway-core'));
@@ -451,7 +467,11 @@ function renderQueryDslMavenCompilerPlugin(a: SpringServiceAnswers): string {
       </plugin>`;
 }
 
-function driverDependencyXml(database: Database): string {
+function driverDependencyXml(database: Database, reactive: boolean): string {
+  if (reactive) {
+    const selected = r2dbcDriverDependency(database);
+    return `    <dependency>\n      <groupId>${selected.groupId}</groupId>\n      <artifactId>${selected.artifactId}</artifactId>\n      <scope>runtime</scope>\n    </dependency>`;
+  }
   const mapping: Record<Database, { groupId: string; artifactId: string }> = {
     PostgreSQL: { groupId: 'org.postgresql', artifactId: 'postgresql' },
     H2: { groupId: 'com.h2database', artifactId: 'h2' },
@@ -466,12 +486,26 @@ function gradleDependency(coordinate: string, configuration = 'implementation'):
   return `    ${configuration}("${coordinate}")`;
 }
 
-function driverCoordinate(database: Database): string {
+function driverCoordinate(database: Database, reactive: boolean): string {
+  if (reactive) {
+    const selected = r2dbcDriverDependency(database);
+    return `${selected.groupId}:${selected.artifactId}`;
+  }
   const mapping: Record<Database, string> = {
     PostgreSQL: 'org.postgresql:postgresql',
     H2: 'com.h2database:h2',
     'MSSQL Server': 'com.microsoft.sqlserver:mssql-jdbc',
     Oracle: 'com.oracle.database.jdbc:ojdbc11'
+  };
+  return mapping[database];
+}
+
+function r2dbcDriverDependency(database: Database): { groupId: string; artifactId: string } {
+  const mapping: Record<Database, { groupId: string; artifactId: string }> = {
+    PostgreSQL: { groupId: 'org.postgresql', artifactId: 'r2dbc-postgresql' },
+    H2: { groupId: 'io.r2dbc', artifactId: 'r2dbc-h2' },
+    'MSSQL Server': { groupId: 'io.r2dbc', artifactId: 'r2dbc-mssql' },
+    Oracle: { groupId: 'com.oracle.database.r2dbc', artifactId: 'oracle-r2dbc' }
   };
   return mapping[database];
 }

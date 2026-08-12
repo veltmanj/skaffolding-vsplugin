@@ -13,6 +13,7 @@ Module._load = function loadVscodeMock(request, parent, isMain) {
 
 const {
   SPRING_BOOT_VERSION,
+  defaultAggregateName,
   persistenceOptions,
   renderGradle,
   renderPomXml,
@@ -128,6 +129,11 @@ test('accepts valid aggregate names', () => {
   assert.equal(validateAggregateName('OrderItem'), undefined);
 });
 
+test('derives the aggregate prompt default from the selected service name', () => {
+  assert.equal(defaultAggregateName('order-service'), 'Order');
+  assert.equal(defaultAggregateName('billing-api'), 'BillingApi');
+});
+
 test('rejects invalid aggregate names', () => {
   assert.match(validateAggregateName('1Order'), /Java class name/);
   assert.match(validateAggregateName('Order-Item'), /Java class name/);
@@ -141,5 +147,39 @@ test('returns reactive persistence options without blocking technologies', () =>
     'Plain JDBC',
     'jOOQ',
     'QueryDSL (JPA)'
-  ]);
+]);
+});
+
+test('renders R2DBC starter and PostgreSQL driver for reactive Spring Data R2DBC', () => {
+  const answers = {
+    ...queryDslAnswers('Maven'),
+    stackMode: 'Reactive',
+    persistenceLayer: 'Spring Data R2DBC'
+  };
+  const pom = renderPomXml(answers);
+  const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
+
+  assert.match(pom, /<artifactId>spring-boot-starter-data-r2dbc<\/artifactId>/);
+  assert.match(pom, /<groupId>org.postgresql<\/groupId>\s*<artifactId>r2dbc-postgresql<\/artifactId>/);
+  assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-data-r2dbc"\)/);
+  assert.match(gradle, /runtimeOnly\("org\.postgresql:r2dbc-postgresql"\)/);
+  assert.doesNotMatch(pom, /spring-boot-starter-jdbc/);
+  assert.doesNotMatch(gradle, /postgresql:postgresql/);
+});
+
+test('adds R2DBC support and driver for reactive jOOQ', () => {
+  const answers = {
+    ...queryDslAnswers('Maven'),
+    stackMode: 'Reactive',
+    persistenceLayer: 'jOOQ'
+  };
+  const pom = renderPomXml(answers);
+  const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
+
+  assert.match(pom, /<artifactId>spring-boot-starter-jooq<\/artifactId>/);
+  assert.match(pom, /<artifactId>spring-boot-starter-data-r2dbc<\/artifactId>/);
+  assert.match(pom, /<artifactId>r2dbc-postgresql<\/artifactId>/);
+  assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-jooq"\)/);
+  assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-data-r2dbc"\)/);
+  assert.match(gradle, /runtimeOnly\("org\.postgresql:r2dbc-postgresql"\)/);
 });
