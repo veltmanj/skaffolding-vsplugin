@@ -11,6 +11,8 @@
 !out/scenarios/scenarioPackRuntime.js
 !out/scenarios/scenarioPackTemplateCommand.js
 !out/scenarios/springBootNewService.js
+!out/scenarios/springBootServiceTemplates.js
+!out/scenarios/springBootTestTemplates.js
 !out/scenarios/springSecurityConfig.js
 !out/scenarios/types.js
 !schemas/scenario-pack.schema.json

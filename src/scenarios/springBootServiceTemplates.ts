@@ -89,6 +89,14 @@ public final class ${aggregate} {
         return name;
     }
 
+    public UUID getId() {
+        return id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
     private static String requireName(String name) {
         String value = Objects.requireNonNull(name, "name must not be null").trim();
         if (value.isEmpty()) {
@@ -409,6 +417,10 @@ function renderJpaAdapter(a: SpringServiceAnswers, appPackage: string): string {
   const entity = `${aggregate}Entity`;
   const variable = variableName(aggregate);
   const persistence = javaPersistenceImport(a);
+  const storedIdType = uuidStorageJavaType(a);
+  const repositoryLookupId = uuidToStorage(a, 'id');
+  const entityId = uuidToStorage(a, `${variable}.id()`);
+  const domainId = storageToUuid(a, 'id');
   return `package ${appPackage}.infrastructure.jpa;
 
 import ${appPackage}.domain.${aggregate};
@@ -438,7 +450,7 @@ public class Jpa${aggregate}RepositoryAdapter implements ${aggregate}Repository 
 
     @Override
     public Optional<${aggregate}> findById(UUID id) {
-        return repository.findById(id).map(${entity}::toDomain);
+        return repository.findById(${repositoryLookupId}).map(${entity}::toDomain);
     }
 
     @Override
@@ -447,7 +459,7 @@ public class Jpa${aggregate}RepositoryAdapter implements ${aggregate}Repository 
     }
 }
 
-interface SpringData${aggregate}Repository extends JpaRepository<${entity}, UUID> {
+interface SpringData${aggregate}Repository extends JpaRepository<${entity}, ${storedIdType}> {
 }
 
 @Entity
@@ -455,19 +467,19 @@ interface SpringData${aggregate}Repository extends JpaRepository<${entity}, UUID
 class ${entity} {
 
     @Id
-    private UUID id;
+    private ${storedIdType} id;
     private String name;
 
     protected ${entity}() {
     }
 
     ${entity}(${aggregate} ${variable}) {
-        this.id = ${variable}.id();
+        this.id = ${entityId};
         this.name = ${variable}.name();
     }
 
     ${aggregate} toDomain() {
-        return new ${aggregate}(id, name);
+        return new ${aggregate}(${domainId}, name);
     }
 }
 `;
@@ -477,6 +489,11 @@ function renderJdbcAdapter(a: SpringServiceAnswers, appPackage: string): string 
   const aggregate = a.aggregateName;
   const variable = variableName(aggregate);
   const table = tableName(aggregate);
+  const aggregateId = uuidToStorage(a, `${variable}.id()`);
+  const lookupId = uuidToStorage(a, 'id');
+  const rowId = a.database === 'Oracle'
+    ? 'UUID.fromString(row.getString("id"))'
+    : 'row.getObject("id", UUID.class)';
   return `package ${appPackage}.infrastructure.jdbc;
 
 import ${appPackage}.domain.${aggregate};
@@ -501,12 +518,12 @@ public class Jdbc${aggregate}RepositoryAdapter implements ${aggregate}Repository
         int updated = jdbc.update(
             "UPDATE ${table} SET name = ? WHERE id = ?",
             ${variable}.name(),
-            ${variable}.id()
+            ${aggregateId}
         );
         if (updated == 0) {
             jdbc.update(
                 "INSERT INTO ${table} (id, name) VALUES (?, ?)",
-                ${variable}.id(),
+                ${aggregateId},
                 ${variable}.name()
             );
         }
@@ -518,10 +535,10 @@ public class Jdbc${aggregate}RepositoryAdapter implements ${aggregate}Repository
         return jdbc.query(
             "SELECT id, name FROM ${table} WHERE id = ?",
             (row, rowNumber) -> new ${aggregate}(
-                row.getObject("id", UUID.class),
+                ${rowId},
                 row.getString("name")
             ),
-            id
+            ${lookupId}
         ).stream().findFirst();
     }
 
@@ -530,7 +547,7 @@ public class Jdbc${aggregate}RepositoryAdapter implements ${aggregate}Repository
         return jdbc.query(
             "SELECT id, name FROM ${table}",
             (row, rowNumber) -> new ${aggregate}(
-                row.getObject("id", UUID.class),
+                ${rowId},
                 row.getString("name")
             )
         );
@@ -543,6 +560,11 @@ function renderR2dbcAdapter(a: SpringServiceAnswers, appPackage: string): string
   const aggregate = a.aggregateName;
   const variable = variableName(aggregate);
   const table = tableName(aggregate);
+  const aggregateId = uuidToStorage(a, `${variable}.id()`);
+  const lookupId = uuidToStorage(a, 'id');
+  const rowId = a.database === 'Oracle'
+    ? 'UUID.fromString(row.get("id", String.class))'
+    : 'row.get("id", UUID.class)';
   return `package ${appPackage}.infrastructure.r2dbc;
 
 import ${appPackage}.domain.${aggregate};
@@ -566,7 +588,7 @@ public class R2dbc${aggregate}RepositoryAdapter implements ${aggregate}Repositor
     public Mono<${aggregate}> save(${aggregate} ${variable}) {
         return database.sql("UPDATE ${table} SET name = :name WHERE id = :id")
             .bind("name", ${variable}.name())
-            .bind("id", ${variable}.id())
+            .bind("id", ${aggregateId})
             .fetch()
             .rowsUpdated()
             .flatMap(updated -> updated == 0 ? insert(${variable}) : Mono.just(${variable}));
@@ -574,7 +596,7 @@ public class R2dbc${aggregate}RepositoryAdapter implements ${aggregate}Repositor
 
     private Mono<${aggregate}> insert(${aggregate} ${variable}) {
         return database.sql("INSERT INTO ${table} (id, name) VALUES (:id, :name)")
-            .bind("id", ${variable}.id())
+            .bind("id", ${aggregateId})
             .bind("name", ${variable}.name())
             .fetch()
             .rowsUpdated()
@@ -584,9 +606,9 @@ public class R2dbc${aggregate}RepositoryAdapter implements ${aggregate}Repositor
     @Override
     public Mono<${aggregate}> findById(UUID id) {
         return database.sql("SELECT id, name FROM ${table} WHERE id = :id")
-            .bind("id", id)
+            .bind("id", ${lookupId})
             .map((row, metadata) -> new ${aggregate}(
-                row.get("id", UUID.class),
+                ${rowId},
                 row.get("name", String.class)
             ))
             .one();
@@ -596,7 +618,7 @@ public class R2dbc${aggregate}RepositoryAdapter implements ${aggregate}Repositor
     public Flux<${aggregate}> findAll() {
         return database.sql("SELECT id, name FROM ${table}")
             .map((row, metadata) -> new ${aggregate}(
-                row.get("id", UUID.class),
+                ${rowId},
                 row.get("name", String.class)
             ))
             .all();
@@ -615,6 +637,10 @@ function renderBlockingJooqAdapter(a: SpringServiceAnswers, appPackage: string):
   const aggregate = a.aggregateName;
   const variable = variableName(aggregate);
   const table = tableName(aggregate);
+  const storedIdType = uuidStorageJavaType(a);
+  const aggregateId = uuidToStorage(a, `${variable}.id()`);
+  const lookupId = uuidToStorage(a, 'id');
+  const recordId = storageToUuid(a, 'record.get(ID)');
   return `package ${appPackage}.infrastructure.jooq;
 
 import ${appPackage}.domain.${aggregate};
@@ -635,7 +661,7 @@ import static org.jooq.impl.DSL.table;
 public class Jooq${aggregate}RepositoryAdapter implements ${aggregate}Repository {
 
     private static final Table<Record> ${table.toUpperCase()} = table("${table}");
-    private static final Field<UUID> ID = field("id", UUID.class);
+    private static final Field<${storedIdType}> ID = field("id", ${storedIdType}.class);
     private static final Field<String> NAME = field("name", String.class);
 
     private final DSLContext dsl;
@@ -648,11 +674,11 @@ public class Jooq${aggregate}RepositoryAdapter implements ${aggregate}Repository
     public ${aggregate} save(${aggregate} ${variable}) {
         int updated = dsl.update(${table.toUpperCase()})
             .set(NAME, ${variable}.name())
-            .where(ID.eq(${variable}.id()))
+            .where(ID.eq(${aggregateId}))
             .execute();
         if (updated == 0) {
             dsl.insertInto(${table.toUpperCase()})
-                .set(ID, ${variable}.id())
+                .set(ID, ${aggregateId})
                 .set(NAME, ${variable}.name())
                 .execute();
         }
@@ -663,15 +689,15 @@ public class Jooq${aggregate}RepositoryAdapter implements ${aggregate}Repository
     public Optional<${aggregate}> findById(UUID id) {
         return dsl.select(ID, NAME)
             .from(${table.toUpperCase()})
-            .where(ID.eq(id))
-            .fetchOptional(record -> new ${aggregate}(record.get(ID), record.get(NAME)));
+            .where(ID.eq(${lookupId}))
+            .fetchOptional(record -> new ${aggregate}(${recordId}, record.get(NAME)));
     }
 
     @Override
     public List<${aggregate}> findAll() {
         return dsl.select(ID, NAME)
             .from(${table.toUpperCase()})
-            .fetch(record -> new ${aggregate}(record.get(ID), record.get(NAME)));
+            .fetch(record -> new ${aggregate}(${recordId}, record.get(NAME)));
     }
 }
 `;
@@ -764,6 +790,10 @@ function renderQueryDslAdapter(a: SpringServiceAnswers, appPackage: string): str
   const entity = `${aggregate}Entity`;
   const variable = variableName(aggregate);
   const persistence = javaPersistenceImport(a);
+  const storedIdType = uuidStorageJavaType(a);
+  const lookupId = uuidToStorage(a, 'id');
+  const entityId = uuidToStorage(a, `${variable}.id()`);
+  const domainId = storageToUuid(a, 'id');
   return `package ${appPackage}.infrastructure.querydsl;
 
 import ${appPackage}.domain.${aggregate};
@@ -802,7 +832,7 @@ public class QueryDsl${aggregate}RepositoryAdapter implements ${aggregate}Reposi
     @Transactional(readOnly = true)
     public Optional<${aggregate}> findById(UUID id) {
         ${entity} entity = queries.selectFrom(${variable.toUpperCase()})
-            .where(${variable.toUpperCase()}.id.eq(id))
+            .where(${variable.toUpperCase()}.id.eq(${lookupId}))
             .fetchOne();
         return Optional.ofNullable(entity).map(${entity}::toDomain);
     }
@@ -823,19 +853,19 @@ public class QueryDsl${aggregate}RepositoryAdapter implements ${aggregate}Reposi
 class ${entity} {
 
     @Id
-    UUID id;
+    ${storedIdType} id;
     String name;
 
     protected ${entity}() {
     }
 
     ${entity}(${aggregate} ${variable}) {
-        this.id = ${variable}.id();
+        this.id = ${entityId};
         this.name = ${variable}.name();
     }
 
     ${aggregate} toDomain() {
-        return new ${aggregate}(id, name);
+        return new ${aggregate}(${domainId}, name);
     }
 }
 `;
@@ -890,8 +920,20 @@ function databaseColumnTypes(a: SpringServiceAnswers): { id: string; name: strin
     case 'MSSQL Server':
       return { id: 'UNIQUEIDENTIFIER', name: 'VARCHAR(255)' };
     case 'Oracle':
-      return { id: 'RAW(16)', name: 'VARCHAR2(255 CHAR)' };
+      return { id: 'VARCHAR2(36)', name: 'VARCHAR2(255 CHAR)' };
   }
+}
+
+function uuidStorageJavaType(a: SpringServiceAnswers): 'String' | 'UUID' {
+  return a.database === 'Oracle' ? 'String' : 'UUID';
+}
+
+function uuidToStorage(a: SpringServiceAnswers, expression: string): string {
+  return a.database === 'Oracle' ? `${expression}.toString()` : expression;
+}
+
+function storageToUuid(a: SpringServiceAnswers, expression: string): string {
+  return a.database === 'Oracle' ? `UUID.fromString(${expression})` : expression;
 }
 
 function variableName(typeName: string): string {

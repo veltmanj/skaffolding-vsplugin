@@ -62,6 +62,7 @@
     "vscode:prepublish": "npm run compile",
     "package": "vsce package --out skaffolding-vsplugin.vsix",
     "check:package": "node scripts/check-vsix.cjs",
+    "smoke:package": "node scripts/smoke-vsix-runtime.cjs",
     "test": "npm run compile && node --test test/**/*.test.cjs",
     "snapshots:update:azure": "npm run compile && node scripts/update-azure-snapshots.cjs"
   },

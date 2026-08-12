@@ -1,3 +1,4 @@
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { createWorkspaceDirectory, resolveWorkspacePath } from './fileSafety';
@@ -14,6 +15,7 @@ type BuildTool = 'Maven' | 'Gradle';
 export type PersistenceLayer = 'None' | 'Hibernate (JPA)' | 'Plain JDBC' | 'Spring Data R2DBC' | 'jOOQ' | 'QueryDSL (JPA)';
 export type Database = 'PostgreSQL' | 'H2' | 'MSSQL Server' | 'Oracle';
 type MigrationTool = 'None' | 'Flyway' | 'Liquibase';
+type TddTool = 'Cucumber';
 
 export const SPRING_BOOT_VERSION = '3.5.4';
 const QUERYDSL_VERSION = '5.1.0';
@@ -22,6 +24,13 @@ const JAKARTA_PERSISTENCE_API_VERSION = '3.1.0';
 const JAVAX_PERSISTENCE_API_VERSION = '2.2';
 const CUCUMBER_VERSION = '7.20.1';
 const MAVEN_SUREFIRE_VERSION = '3.5.4';
+const SPRING_BOOT_SERVICE_MARKERS = [
+  'pom.xml',
+  'build.gradle.kts',
+  'settings.gradle.kts',
+  path.join('src', 'main', 'resources', 'application.yml'),
+  'ARCHITECTURE_NOTES.md'
+];
 
 export interface SpringServiceAnswers {
   stackMode: StackMode;
@@ -33,7 +42,7 @@ export interface SpringServiceAnswers {
   buildTool: BuildTool;
   javaVersion: string;
   useTdd: boolean;
-  tddTool: string;
+  tddTool: TddTool;
   persistenceLayer: PersistenceLayer;
   database: Database;
   migrationTool: MigrationTool;
@@ -52,6 +61,17 @@ export const createSpringBootServiceScenario: Scenario = {
 
     const answers = await askQuestions();
     if (!answers) {
+      return;
+    }
+
+    const existingMarker = await findExistingSpringBootServiceMarker(
+      folder.uri.fsPath,
+      answers.folderName
+    );
+    if (existingMarker) {
+      vscode.window.showErrorMessage(
+        `Folder ${answers.folderName} already contains a Spring Boot service (${existingMarker}). Choose an empty service folder.`
+      );
       return;
     }
 
@@ -125,6 +145,40 @@ export const createSpringBootServiceScenario: Scenario = {
   }
 };
 
+async function findExistingSpringBootServiceMarker(
+  workspaceRoot: string,
+  folderName: string
+): Promise<string | undefined> {
+  const serviceRoot = resolveWorkspacePath(workspaceRoot, folderName);
+  try {
+    const entries = await fs.readdir(serviceRoot);
+    if (entries.length === 0) {
+      return undefined;
+    }
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+
+  for (const marker of SPRING_BOOT_SERVICE_MARKERS) {
+    try {
+      await fs.lstat(path.join(serviceRoot, marker));
+      return marker;
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
 async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
   const stackMode = await pick<StackMode>('Reactive or Non-Reactive?', ['Reactive', 'Non-Reactive']);
   if (!stackMode) {
@@ -161,7 +215,11 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
     return undefined;
   }
 
-  const javaVersion = await input('Java version', '25', validateJavaVersion);
+  const javaVersion = await input(
+    'Java version',
+    defaultJavaVersion(springBootVersion),
+    (value) => validateJavaVersion(value, springBootVersion)
+  );
   if (!javaVersion) {
     return undefined;
   }
@@ -172,9 +230,9 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
   }
 
   const useTdd = useTddPick === 'Yes';
-  let tddTool = 'Cucumber';
+  let tddTool: TddTool = 'Cucumber';
   if (useTdd) {
-    const selectedTool = await input('TDD tool', 'Cucumber');
+    const selectedTool = await pick<TddTool>('TDD tool', ['Cucumber']);
     if (!selectedTool) {
       return undefined;
     }
@@ -186,14 +244,20 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
     return undefined;
   }
 
-  const database = await pick<Database>('Database', databaseOptions(stackMode, persistenceLayer));
-  if (!database) {
-    return undefined;
-  }
+  let database: Database = 'H2';
+  let migrationTool: MigrationTool = 'None';
+  if (persistenceLayer !== 'None') {
+    const selectedDatabase = await pick<Database>('Database', databaseOptions(stackMode, persistenceLayer));
+    if (!selectedDatabase) {
+      return undefined;
+    }
+    database = selectedDatabase;
 
-  const migrationTool = await pick<MigrationTool>('Schema migration tool', ['None', 'Flyway', 'Liquibase']);
-  if (!migrationTool) {
-    return undefined;
+    const selectedMigrationTool = await pick<MigrationTool>('Schema migration tool', ['None', 'Flyway', 'Liquibase']);
+    if (!selectedMigrationTool) {
+      return undefined;
+    }
+    migrationTool = selectedMigrationTool;
   }
 
   return {
@@ -354,7 +418,9 @@ export function renderApplicationYaml(a: SpringServiceAnswers): string {
   const reactivePersistence = a.stackMode === 'Reactive' && a.persistenceLayer !== 'None';
   const db = a.persistenceLayer === 'None' ? '' : reactivePersistence ? r2dbcYamlBlock(a.database) : dbYamlBlock(a.database);
   const jooq = reactivePersistence && a.persistenceLayer === 'jOOQ' ? jooqYamlBlock(a.database) : '';
-  const migration = migrationYamlBlock(a.migrationTool, a.database, a.stackMode === 'Reactive');
+  const migration = a.persistenceLayer === 'None'
+    ? ''
+    : migrationYamlBlock(a.migrationTool, a.database, a.stackMode === 'Reactive');
   return `spring:
   application:
     name: ${a.serviceName}
@@ -362,6 +428,7 @@ ${db}${jooq}${migration}`;
 }
 
 function renderArchitectureNotes(a: SpringServiceAnswers, pkg: string): string {
+  const hasPersistence = a.persistenceLayer !== 'None';
   return `# Service Setup Notes
 
 ## Selected Options
@@ -375,8 +442,8 @@ function renderArchitectureNotes(a: SpringServiceAnswers, pkg: string): string {
 - TDD enabled: ${a.useTdd ? 'Yes' : 'No'}
 - TDD tool: ${a.useTdd ? a.tddTool : 'Not selected'}
 - Persistence layer: ${a.persistenceLayer}
-- Database: ${a.database}
-- Migration tool: ${a.migrationTool}
+- Database: ${hasPersistence ? a.database : 'Not selected'}
+- Migration tool: ${hasPersistence ? a.migrationTool : 'Not selected'}
 
 ## Next Step
 - Add domain, application, and infrastructure modules.
@@ -385,6 +452,7 @@ function renderArchitectureNotes(a: SpringServiceAnswers, pkg: string): string {
 }
 
 function buildDependencyBlocks(a: SpringServiceAnswers): string {
+  const hasPersistence = a.persistenceLayer !== 'None';
   const lines: string[] = [
     dependencyXml(a.stackMode === 'Reactive' ? 'spring-boot-starter-webflux' : 'spring-boot-starter-web'),
     dependencyXml('spring-boot-starter-validation')
@@ -414,18 +482,18 @@ function buildDependencyBlocks(a: SpringServiceAnswers): string {
   if (a.persistenceLayer !== 'None') {
     lines.push(driverDependencyXml(a.database, reactivePersistence));
   }
-  if (a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
+  if (hasPersistence && a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
     lines.push(dependencyXml('spring-jdbc', 'org.springframework'));
     lines.push(driverDependencyXml(a.database, false));
   }
-  if (a.migrationTool === 'Flyway') {
+  if (hasPersistence && a.migrationTool === 'Flyway') {
     lines.push(dependencyXml('flyway-core', 'org.flywaydb'));
     const databaseModule = flywayDatabaseModule(a);
     if (databaseModule) {
       lines.push(dependencyXml(databaseModule, 'org.flywaydb'));
     }
   }
-  if (a.migrationTool === 'Liquibase') {
+  if (hasPersistence && a.migrationTool === 'Liquibase') {
     lines.push(dependencyXml('liquibase-core', 'org.liquibase'));
   }
 
@@ -483,6 +551,7 @@ function renderMavenTestPlugin(a: SpringServiceAnswers): string {
 }
 
 function buildGradleDependencies(a: SpringServiceAnswers): string {
+  const hasPersistence = a.persistenceLayer !== 'None';
   const lines: string[] = [
     gradleDependency(a.stackMode === 'Reactive' ? 'org.springframework.boot:spring-boot-starter-webflux' : 'org.springframework.boot:spring-boot-starter-web'),
     gradleDependency('org.springframework.boot:spring-boot-starter-validation')
@@ -521,18 +590,18 @@ function buildGradleDependencies(a: SpringServiceAnswers): string {
   if (a.persistenceLayer !== 'None') {
     lines.push(gradleDependency(driverCoordinate(a.database, reactivePersistence), 'runtimeOnly'));
   }
-  if (a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
+  if (hasPersistence && a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
     lines.push(gradleDependency('org.springframework:spring-jdbc'));
     lines.push(gradleDependency(driverCoordinate(a.database, false), 'runtimeOnly'));
   }
-  if (a.migrationTool === 'Flyway') {
+  if (hasPersistence && a.migrationTool === 'Flyway') {
     lines.push(gradleDependency('org.flywaydb:flyway-core'));
     const databaseModule = flywayDatabaseModule(a);
     if (databaseModule) {
       lines.push(gradleDependency(`org.flywaydb:${databaseModule}`));
     }
   }
-  if (a.migrationTool === 'Liquibase') {
+  if (hasPersistence && a.migrationTool === 'Liquibase') {
     lines.push(gradleDependency('org.liquibase:liquibase-core'));
   }
 
@@ -666,7 +735,7 @@ function r2dbcYamlBlock(database: Database): string {
   const mapping: Record<Database, string> = {
     PostgreSQL: `  r2dbc:\n    url: r2dbc:postgresql://localhost:5432/appdb\n    username: app\n    password: app\n`,
     H2: `  r2dbc:\n    url: r2dbc:h2:mem:///appdb\n    username: sa\n    password: ""\n`,
-    'MSSQL Server': `  r2dbc:\n    url: r2dbc:sqlserver://localhost:1433/appdb\n    username: sa\n    password: yourStrong(!)Password\n`,
+    'MSSQL Server': `  r2dbc:\n    url: r2dbc:mssql://localhost:1433/appdb\n    username: sa\n    password: yourStrong(!)Password\n`,
     Oracle: `  r2dbc:\n    url: r2dbc:oracle://localhost:1521/FREEPDB1\n    username: app\n    password: app\n`
   };
   return mapping[database];
@@ -730,12 +799,19 @@ function validateRequiredValue(value: string): string | undefined {
   return value.length === 0 ? 'This value is required.' : undefined;
 }
 
-export function validateJavaVersion(value: string): string | undefined {
+export function validateJavaVersion(
+  value: string,
+  springBootVersion = SPRING_BOOT_VERSION
+): string | undefined {
   if (!/^\d+$/.test(value)) {
     return 'Java version must be a whole number.';
   }
-  if (Number.parseInt(value, 10) < 17) {
+  const javaVersion = Number.parseInt(value, 10);
+  if (javaVersion < 17) {
     return 'Java version must be at least 17.';
+  }
+  if (springBootVersion.startsWith('2.') && javaVersion > 21) {
+    return 'Spring Boot 2 supports Java versions up to Java 21.';
   }
   return undefined;
 }
@@ -744,7 +820,15 @@ export function validateSpringBootVersion(value: string): string | undefined {
   if (!/^\d+\.\d+\.\d+$/.test(value)) {
     return 'Spring Boot version must be a semantic version with three numeric parts.';
   }
+  const majorVersion = Number.parseInt(value.split('.')[0], 10);
+  if (majorVersion !== 2 && majorVersion !== 3) {
+    return 'Spring Boot major version must be 2 or 3.';
+  }
   return undefined;
+}
+
+function defaultJavaVersion(springBootVersion: string): string {
+  return springBootVersion.startsWith('2.') ? '21' : '25';
 }
 
 export function validateAggregateName(value: string): string | undefined {

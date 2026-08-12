@@ -63,9 +63,11 @@ different file appeared after approval.
 
 This scenario asks for the stack mode, service name, aggregate name, folder,
 base package, Maven or Gradle, an editable Spring Boot semantic version, Java
-version, TDD settings, persistence, database, and migration tool. The default
-Spring Boot version is `3.5.4`; entering another valid semantic version lets
-you generate compatible Boot 2.x or 3.x dependency coordinates where needed.
+version, TDD settings, and persistence. Database and migration questions appear
+only when persistence is selected. The default Spring Boot version is `3.5.4`;
+the generator accepts Boot 2.x and 3.x semantic versions. It defaults Java to
+21 for Boot 2 and to 25 for the current Boot 3 default. Boot 2 rejects Java
+versions above 21.
 
 It generates the build file, `application.yml`, main class, and
 `ARCHITECTURE_NOTES.md`, plus a clean-architecture starting point: a domain
@@ -73,7 +75,13 @@ aggregate and repository port, an application service, a REST controller, and
 the selected infrastructure persistence adapter. The aggregate name controls
 the generated domain, application, web, persistence, migration, and test file
 names. Architecture notes record every selected option, including the Boot
-version and aggregate name.
+version and aggregate name. Generated REST responses expose JavaBean properties
+for Jackson, and TDD output verifies their JSON shape with a web slice test.
+
+Run service generation only into a new or empty target folder. If the target
+already contains a Maven/Gradle service manifest, generated application
+configuration, or generated architecture notes, the scenario stops before it
+writes any files.
 
 Reactive services use WebFlux. Their persistence prompt offers only `None`,
 Spring Data R2DBC, and jOOQ, so blocking JPA, JDBC, and QueryDSL options cannot
@@ -81,13 +89,15 @@ be selected. Non-reactive services offer Hibernate (JPA), plain JDBC, jOOQ,
 and QueryDSL (JPA); QueryDSL adds the version-appropriate API and annotation
 processor configuration.
 
-With TDD enabled, the scenario generates a Cucumber feature, step definitions,
-JUnit Platform runner, unit test, and the required Cucumber build dependencies.
+With TDD enabled, the only tool choice is Cucumber. The scenario generates a
+Cucumber feature, step definitions, JUnit Platform runner, unit test, web JSON
+serialization test, and the required Cucumber build dependencies.
 With TDD disabled, it generates none of those Cucumber files or dependencies.
 Flyway creates an aggregate schema migration and Liquibase creates an aggregate
 changelog. Reactive migrations keep a JDBC migration connection alongside the
 application R2DBC connection. Selecting no persistence generates an in-memory
-adapter and no database schema.
+adapter. It does not prompt for a database or migration tool, and it emits no
+database dependencies, configuration, or schema.
 
 ### Spring Boot: Add SecurityConfig
 

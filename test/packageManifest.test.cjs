@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '..');
 const inspectorPath = path.join(projectRoot, 'scripts', 'check-vsix.cjs');
+const runtimeSmokePath = path.join(projectRoot, 'scripts', 'smoke-vsix-runtime.cjs');
 const packageManifest = require('../package.json');
 const releaseMetadata = {
   publisher: 'release-publisher',
@@ -17,7 +18,18 @@ const releaseMetadata = {
   license: 'MIT'
 };
 
-function createVsix({ files, manifest, includeLicense = true, addReleaseMetadata = true }) {
+const springTemplateFiles = {
+  'out/scenarios/springBootServiceTemplates.js': 'module.exports = {};',
+  'out/scenarios/springBootTestTemplates.js': 'module.exports = {};'
+};
+
+function createVsix({
+  files,
+  manifest,
+  includeLicense = true,
+  addReleaseMetadata = true,
+  includeSpringTemplates = true
+}) {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'skaffold-vsix-'));
   const extensionRoot = path.join(temporaryRoot, 'extension');
   const vsixPath = path.join(temporaryRoot, 'extension.vsix');
@@ -33,7 +45,8 @@ function createVsix({ files, manifest, includeLicense = true, addReleaseMetadata
     fs.writeFileSync(path.join(extensionRoot, 'LICENSE.txt'), 'MIT License\n', 'utf8');
   }
 
-  for (const [relativePath, contents] of Object.entries(files)) {
+  const packagedFiles = includeSpringTemplates ? { ...springTemplateFiles, ...files } : files;
+  for (const [relativePath, contents] of Object.entries(packagedFiles)) {
     const targetPath = path.join(extensionRoot, relativePath);
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, contents, 'utf8');
@@ -52,10 +65,17 @@ function inspectVsix(vsixPath) {
   });
 }
 
+function smokeVsix(vsixPath) {
+  return childProcess.spawnSync(process.execPath, [runtimeSmokePath, vsixPath], {
+    encoding: 'utf8'
+  });
+}
+
 test('declares the commands needed to build and inspect a VSIX', () => {
   assert.equal(packageManifest.scripts['vscode:prepublish'], 'npm run compile');
   assert.match(packageManifest.scripts.package, /vsce package/);
   assert.equal(packageManifest.scripts['check:package'], 'node scripts/check-vsix.cjs');
+  assert.equal(packageManifest.scripts['smoke:package'], 'node scripts/smoke-vsix-runtime.cjs');
   assert.equal(
     packageManifest.scripts['snapshots:update:azure'],
     'npm run compile && node scripts/update-azure-snapshots.cjs'
@@ -93,6 +113,62 @@ test('accepts a VSIX with the manifest entry point and scenario schema', () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /VSIX package check passed/);
+  } finally {
+    fs.rmSync(fixture.temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('rejects a VSIX that omits a Spring Boot runtime template module', () => {
+  for (const missingPath of Object.keys(springTemplateFiles)) {
+    const files = {
+      'out/extension.js': 'module.exports = {};',
+      'schemas/scenario-pack.schema.json': '{}',
+      ...springTemplateFiles
+    };
+    delete files[missingPath];
+    const fixture = createVsix({
+      manifest: { main: './out/extension.js' },
+      files,
+      includeSpringTemplates: false
+    });
+
+    try {
+      const result = inspectVsix(fixture.vsixPath);
+
+      assert.notEqual(result.status, 0, missingPath);
+      assert.match(result.stderr, new RegExp(missingPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    } finally {
+      fs.rmSync(fixture.temporaryRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test('packaged extension runtime smoke loads and activates the declared main module', () => {
+  const commandId = 'skaffold.createSpringBootService';
+  const fixture = createVsix({
+    manifest: {
+      main: './out/extension.js',
+      contributes: { commands: [{ command: commandId }] }
+    },
+    files: {
+      'out/extension.js': `
+        require('./scenarios/springBootServiceTemplates');
+        require('./scenarios/springBootTestTemplates');
+        const vscode = require('vscode');
+        exports.activate = (context) => {
+          context.subscriptions.push(vscode.commands.registerCommand('${commandId}', () => {}));
+        };
+      `,
+      'schemas/scenario-pack.schema.json': '{}'
+    }
+  });
+
+  try {
+    const result = smokeVsix(fixture.vsixPath);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /runtime smoke passed/i);
+    assert.match(result.stdout, /1 command registered/);
   } finally {
     fs.rmSync(fixture.temporaryRoot, { recursive: true, force: true });
   }

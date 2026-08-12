@@ -6,6 +6,7 @@ const path = require('node:path');
 const Module = require('node:module');
 
 const state = {
+  errorMessages: [],
   infoMessages: [],
   warningMessages: [],
   inputBoxes: [],
@@ -18,7 +19,10 @@ const vscode = {
     file: (fsPath) => ({ fsPath })
   },
   window: {
-    showErrorMessage: async () => undefined,
+    showErrorMessage: async (message) => {
+      state.errorMessages.push(message);
+      return undefined;
+    },
     showInformationMessage: async (message) => {
       state.infoMessages.push(message);
       return undefined;
@@ -69,11 +73,31 @@ async function reset({ quickPicks = [], inputBoxes = [] } = {}) {
     await fs.rm(state.root, { recursive: true, force: true });
   }
   state.root = await fs.mkdtemp(path.join(os.tmpdir(), 'skaffolding-generator-write-'));
+  state.errorMessages = [];
   state.infoMessages = [];
   state.warningMessages = [];
   state.inputBoxes = inputBoxes;
   state.quickPicks = quickPicks;
   vscode.workspace.workspaceFolders = [{ uri: vscode.Uri.file(state.root) }];
+}
+
+async function snapshotDirectory(directory) {
+  const entries = {};
+
+  async function visit(currentDirectory) {
+    for (const entry of await fs.readdir(currentDirectory, { withFileTypes: true })) {
+      const absolutePath = path.join(currentDirectory, entry.name);
+      const relativePath = path.relative(directory, absolutePath);
+      if (entry.isDirectory()) {
+        await visit(absolutePath);
+      } else {
+        entries[relativePath] = await fs.readFile(absolutePath, 'utf8');
+      }
+    }
+  }
+
+  await visit(directory);
+  return entries;
 }
 
 test('scenario packs warn and skip invalid files while loading valid files', async () => {
@@ -179,9 +203,9 @@ test('scenario packs stop later writes after an earlier file is created', async 
   assert.match(state.infoMessages.at(-1), /Files created: 1\. Files overwritten: 0\. Files skipped: 0\./);
 });
 
-test('Spring Boot service creation stops when an overwrite picker is dismissed', async () => {
+test('Spring Boot service creation stops before writing into an existing service folder', async () => {
   await reset({
-    quickPicks: ['Reactive', 'Maven', 'No', 'None', 'PostgreSQL', 'None', undefined],
+    quickPicks: ['Reactive', 'Maven', 'No', 'None', 'PostgreSQL', 'None'],
     inputBoxes: ['3.5.4', 'demo', 'Demo', 'service', 'com.example.demo', '25']
   });
   await fs.mkdir(path.join(state.root, 'service'), { recursive: true });
@@ -190,24 +214,48 @@ test('Spring Boot service creation stops when an overwrite picker is dismissed',
   await createSpringBootServiceScenario.run({});
 
   await assert.rejects(fs.stat(path.join(state.root, 'service', 'src/main/resources/application.yml')));
-  assert.match(state.infoMessages.at(-1), /cancelled/i);
+  assert.equal(await fs.readFile(path.join(state.root, 'service', 'pom.xml'), 'utf8'), 'existing');
+  assert.match(state.errorMessages.at(-1), /already contains a Spring Boot service/i);
 });
 
-test('Spring Boot service creation reports a mixed write sequence', async () => {
+test('Spring Boot service rerun leaves all first-run files unchanged', async () => {
   await reset({
-    quickPicks: ['Reactive', 'Maven', 'No', 'None', 'PostgreSQL', 'None', 'Overwrite', 'Skip'],
+    quickPicks: ['Non-Reactive', 'Maven', 'No', 'Hibernate (JPA)', 'PostgreSQL', 'None'],
     inputBoxes: ['3.5.4', 'demo', 'Demo', 'service', 'com.example.demo', '25']
   });
+  await createSpringBootServiceScenario.run({});
+
   const serviceRoot = path.join(state.root, 'service');
-  await fs.mkdir(path.join(serviceRoot, 'src/main/resources'), { recursive: true });
-  await fs.writeFile(path.join(serviceRoot, 'pom.xml'), 'replace this content');
-  await fs.writeFile(path.join(serviceRoot, 'src/main/resources/application.yml'), 'keep this content');
+  const firstRun = await snapshotDirectory(serviceRoot);
+  state.quickPicks = [
+    'Non-Reactive', 'Maven', 'No', 'Plain JDBC', 'PostgreSQL', 'Flyway',
+    ...Array(20).fill('Overwrite')
+  ];
+  state.inputBoxes = ['3.5.4', 'demo', 'Demo', 'service', 'com.example.demo', '25'];
+  state.errorMessages = [];
 
   await createSpringBootServiceScenario.run({});
 
-  assert.match(await fs.readFile(path.join(serviceRoot, 'pom.xml'), 'utf8'), /<project/);
-  assert.equal(await fs.readFile(path.join(serviceRoot, 'src/main/resources/application.yml'), 'utf8'), 'keep this content');
-  assert.match(state.infoMessages.at(-1), /Files created: 7\. Files overwritten: 1\. Files skipped: 1\./);
+  assert.deepEqual(await snapshotDirectory(serviceRoot), firstRun);
+  await assert.rejects(fs.stat(path.join(
+    serviceRoot,
+    'src/main/java/com/example/demo/infrastructure/jdbc/JdbcDemoRepositoryAdapter.java'
+  )));
+  assert.match(state.errorMessages.at(-1), /already contains a Spring Boot service/i);
+});
+
+test('Spring Boot service creation generates normally in an existing empty folder', async () => {
+  await reset({
+    quickPicks: ['Non-Reactive', 'Gradle', 'No', 'Hibernate (JPA)', 'H2', 'None'],
+    inputBoxes: ['3.5.4', 'demo', 'Demo', 'service', 'com.example.demo', '25']
+  });
+  const serviceRoot = path.join(state.root, 'service');
+  await fs.mkdir(serviceRoot, { recursive: true });
+
+  await createSpringBootServiceScenario.run({});
+
+  assert.match(await fs.readFile(path.join(serviceRoot, 'build.gradle.kts'), 'utf8'), /springframework\.boot/);
+  assert.match(state.infoMessages.at(-1), /Spring Boot service complete/);
 });
 
 test('Spring Boot service creation stops later writes after an earlier file is created', async () => {

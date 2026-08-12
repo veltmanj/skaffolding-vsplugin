@@ -53,6 +53,8 @@ const mainPath = `extension/${packagedManifest.main.replace(/^\.\//, '')}`;
 const requiredPaths = [
   mainPath,
   'extension/out/extension.js',
+  'extension/out/scenarios/springBootServiceTemplates.js',
+  'extension/out/scenarios/springBootTestTemplates.js',
   'extension/schemas/scenario-pack.schema.json',
   'extension/LICENSE.txt'
 ];

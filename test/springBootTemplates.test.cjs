@@ -7,7 +7,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const springServiceScenarioState = {
+  inputBoxCalls: [],
   workspaceRoot: '',
+  quickPickCalls: [],
   quickPicks: [],
   inputBoxes: []
 };
@@ -19,8 +21,14 @@ const vscode = {
   window: {
     showErrorMessage: async () => undefined,
     showInformationMessage: async () => undefined,
-    showQuickPick: async () => springServiceScenarioState.quickPicks.shift(),
-    showInputBox: async () => springServiceScenarioState.inputBoxes.shift()
+    showQuickPick: async (options, configuration) => {
+      springServiceScenarioState.quickPickCalls.push({ options, configuration });
+      return springServiceScenarioState.quickPicks.shift();
+    },
+    showInputBox: async (configuration) => {
+      springServiceScenarioState.inputBoxCalls.push(configuration);
+      return springServiceScenarioState.inputBoxes.shift();
+    }
   },
   workspace: {
     workspaceFolders: []
@@ -93,7 +101,9 @@ function queryDslAnswers(buildTool) {
 async function generateSpringBootService({ quickPicks, inputBoxes }) {
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'skaffolding-spring-service-'));
   springServiceScenarioState.workspaceRoot = workspaceRoot;
+  springServiceScenarioState.inputBoxCalls = [];
   springServiceScenarioState.quickPicks = quickPicks;
+  springServiceScenarioState.quickPickCalls = [];
   springServiceScenarioState.inputBoxes = inputBoxes;
   vscode.workspace.workspaceFolders = [{ uri: vscode.Uri.file(workspaceRoot) }];
 
@@ -117,7 +127,7 @@ test('Cucumber Maven and Gradle builds include the JUnit Platform engine and sui
   assert.match(gradle, /tasks\.withType<Test>\s*\{\s*useJUnitPlatform\(\)/);
 });
 
-test('Cucumber feature, step, runner, and unit test files use the selected aggregate', () => {
+test('Cucumber feature, step, runner, unit, and web test files use the selected aggregate', () => {
   const files = renderGeneratedTestFiles(
     serviceAnswers({ useTdd: true, aggregateName: 'Invoice' }),
     'com.example.orders'
@@ -126,6 +136,7 @@ test('Cucumber feature, step, runner, and unit test files use the selected aggre
   const steps = generatedFile(files, 'src/test/java/com/example/orders/InvoiceStepDefinitions.java');
   const runner = generatedFile(files, 'src/test/java/com/example/orders/CucumberTest.java');
   const unitTest = generatedFile(files, 'src/test/java/com/example/orders/InvoiceServiceTest.java');
+  const webTest = generatedFile(files, 'src/test/java/com/example/orders/InvoiceControllerTest.java');
 
   assert.match(feature, /Feature: Manage Invoice/);
   assert.match(feature, /Given a new Invoice named "Example Invoice"/);
@@ -137,6 +148,34 @@ test('Cucumber feature, step, runner, and unit test files use the selected aggre
   assert.match(runner, /@SelectClasspathResource\("features"\)/);
   assert.match(unitTest, /class InvoiceServiceTest/);
   assert.match(unitTest, /creates_an_invoice_with_the_requested_name/);
+  assert.match(webTest, /class InvoiceControllerTest/);
+  assert.match(webTest, /serializes_an_invoice_response_as_json/);
+});
+
+test('generated MVC web test verifies Jackson response fields', () => {
+  const files = renderGeneratedTestFiles(
+    serviceAnswers({ useTdd: true, stackMode: 'Non-Reactive' }),
+    'com.example.orders'
+  );
+  const webTest = generatedFile(files, 'src/test/java/com/example/orders/OrderControllerTest.java');
+
+  assert.match(webTest, /@WebMvcTest\(OrderController\.class\)/);
+  assert.match(webTest, /MockMvc/);
+  assert.match(webTest, /jsonPath\("\$\.id"\)\.value\(id\.toString\(\)\)/);
+  assert.match(webTest, /jsonPath\("\$\.name"\)\.value\("Example Order"\)/);
+});
+
+test('generated WebFlux web test verifies Jackson response fields', () => {
+  const files = renderGeneratedTestFiles(
+    serviceAnswers({ useTdd: true, stackMode: 'Reactive' }),
+    'com.example.orders'
+  );
+  const webTest = generatedFile(files, 'src/test/java/com/example/orders/OrderControllerTest.java');
+
+  assert.match(webTest, /@WebFluxTest\(OrderController\.class\)/);
+  assert.match(webTest, /WebTestClient/);
+  assert.match(webTest, /jsonPath\("\$\.id"\)\.isEqualTo\(id\.toString\(\)\)/);
+  assert.match(webTest, /jsonPath\("\$\.name"\)\.isEqualTo\("Example Order"\)/);
 });
 
 test('reactive Cucumber steps and unit test use Mono and Flux repository contracts', () => {
@@ -188,6 +227,37 @@ test('TDD-disabled service output omits Cucumber files and dependencies', async 
   assert.doesNotMatch(gradle, /cucumber/i);
 });
 
+test('wizard offers only Cucumber and skips database choices for persistence None', async (t) => {
+  const workspaceRoot = await generateSpringBootService({
+    quickPicks: ['Reactive', 'Maven', 'Yes', 'Cucumber', 'None'],
+    inputBoxes: ['2.7.18', 'demo-service', 'Demo', 'services/demo-service', 'com.example.demo', '21']
+  });
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+
+  const quickPickTitles = springServiceScenarioState.quickPickCalls.map(
+    (call) => call.configuration.placeHolder
+  );
+  const tddToolCall = springServiceScenarioState.quickPickCalls.find(
+    (call) => call.configuration.placeHolder === 'TDD tool'
+  );
+  const javaCall = springServiceScenarioState.inputBoxCalls.find(
+    (call) => call.prompt === 'Java version'
+  );
+  const notes = fs.readFileSync(
+    path.join(workspaceRoot, 'services/demo-service/ARCHITECTURE_NOTES.md'),
+    'utf8'
+  );
+
+  assert.deepEqual(tddToolCall.options, ['Cucumber']);
+  assert.equal(quickPickTitles.includes('Database'), false);
+  assert.equal(quickPickTitles.includes('Schema migration tool'), false);
+  assert.equal(javaCall.value, '21');
+  assert.match(javaCall.validateInput('22'), /Spring Boot 2.*Java 21/i);
+  assert.match(notes, /- TDD tool: Cucumber/);
+  assert.match(notes, /- Database: Not selected/);
+  assert.match(notes, /- Migration tool: Not selected/);
+});
+
 test('Maven executes and reports generated Cucumber success and failure', { timeout: 120_000 }, (t) => {
   const mavenVersion = spawnSync('mvn', ['--version'], { encoding: 'utf8' });
   if (mavenVersion.error?.code === 'ENOENT') {
@@ -211,6 +281,17 @@ test('Maven executes and reports generated Cucumber success and failure', { time
   });
   const files = [
     { path: 'pom.xml', content: renderPomXml(answers) },
+    {
+      path: 'src/main/java/com/example/orders/OrderServiceApplication.java',
+      content: `package com.example.orders;
+
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class OrderServiceApplication {
+}
+`
+    },
     ...renderGeneratedServiceFiles(answers, 'com.example.orders'),
     ...renderGeneratedTestFiles(answers, 'com.example.orders')
   ];
@@ -320,6 +401,71 @@ test('Maven executes and reports generated Cucumber success and failure', { time
   );
 });
 
+test('Maven executes the generated reactive web serialization test', { timeout: 120_000 }, (t) => {
+  const mavenVersion = spawnSync('mvn', ['--version'], { encoding: 'utf8' });
+  if (mavenVersion.error?.code === 'ENOENT') {
+    t.skip('Maven is not installed');
+    return;
+  }
+  assert.equal(
+    mavenVersion.status,
+    0,
+    `Unable to run Maven:\n${mavenVersion.stdout}${mavenVersion.stderr}`
+  );
+
+  const projectDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'skaffolding-maven-webflux-'));
+  t.after(() => fs.rmSync(projectDirectory, { recursive: true, force: true }));
+  const answers = serviceAnswers({
+    stackMode: 'Reactive',
+    useTdd: true,
+    buildTool: 'Maven',
+    javaVersion: '17',
+    persistenceLayer: 'None',
+    database: 'H2'
+  });
+  const files = [
+    { path: 'pom.xml', content: renderPomXml(answers) },
+    {
+      path: 'src/main/java/com/example/orders/OrderServiceApplication.java',
+      content: `package com.example.orders;
+
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class OrderServiceApplication {
+}
+`
+    },
+    ...renderGeneratedServiceFiles(answers, 'com.example.orders'),
+    ...renderGeneratedTestFiles(answers, 'com.example.orders')
+  ];
+
+  for (const file of files) {
+    const destination = path.join(projectDirectory, file.path);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, file.content);
+  }
+
+  const mavenTest = spawnSync(
+    'mvn',
+    ['-q', 'test', '-Dtest=OrderControllerTest'],
+    { cwd: projectDirectory, encoding: 'utf8', timeout: 120_000 }
+  );
+  assert.equal(
+    mavenTest.status,
+    0,
+    `Generated reactive Maven web test failed:\n${mavenTest.stdout}${mavenTest.stderr}`
+  );
+
+  const report = fs.readFileSync(
+    path.join(projectDirectory, 'target/surefire-reports/TEST-com.example.orders.OrderControllerTest.xml'),
+    'utf8'
+  );
+  assert.match(report, /<testsuite[^>]*\btests="1"/);
+  assert.match(report, /<testsuite[^>]*\berrors="0"/);
+  assert.match(report, /<testsuite[^>]*\bfailures="0"/);
+});
+
 test('generated files contain a persistence-free domain and repository port', () => {
   const files = renderGeneratedServiceFiles(serviceAnswers(), 'com.example.orders');
   const aggregate = generatedFile(files, 'src/main/java/com/example/orders/domain/Order.java');
@@ -331,6 +477,8 @@ test('generated files contain a persistence-free domain and repository port', ()
   assert.match(aggregate, /public final class Order/);
   assert.match(aggregate, /private final UUID id;/);
   assert.match(aggregate, /private final String name;/);
+  assert.match(aggregate, /public UUID getId\(\)/);
+  assert.match(aggregate, /public String getName\(\)/);
   assert.match(repository, /interface OrderRepository/);
   assert.match(repository, /Optional<Order> findById\(UUID id\)/);
   assert.doesNotMatch(`${aggregate}\n${repository}`, /org\.springframework|javax\.persistence|jakarta\.persistence/);
@@ -480,7 +628,7 @@ test('Flyway generation creates a database-specific aggregate schema', () => {
     ['PostgreSQL', 'UUID'],
     ['H2', 'UUID'],
     ['MSSQL Server', 'UNIQUEIDENTIFIER'],
-    ['Oracle', 'RAW(16)']
+    ['Oracle', 'VARCHAR2(36)']
   ];
 
   for (const [database, idType] of databaseTypes) {
@@ -526,7 +674,7 @@ test('Liquibase generation creates a database-specific aggregate changelog', () 
     ['PostgreSQL', 'UUID'],
     ['H2', 'UUID'],
     ['MSSQL Server', 'UNIQUEIDENTIFIER'],
-    ['Oracle', 'RAW(16)']
+    ['Oracle', 'VARCHAR2(36)']
   ];
 
   for (const [database, idType] of databaseTypes) {
@@ -555,6 +703,69 @@ test('persistence None does not generate a database schema', () => {
 
     assert.equal(files.filter((file) => file.path.includes('/db/')).length, 0);
   }
+});
+
+test('Oracle adapters bind VARCHAR2 UUID identifiers as strings', () => {
+  const jpa = generatedFile(
+    renderGeneratedServiceFiles(serviceAnswers({
+      persistenceLayer: 'Hibernate (JPA)',
+      database: 'Oracle'
+    }), 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/jpa/JpaOrderRepositoryAdapter.java'
+  );
+  const jdbc = generatedFile(
+    renderGeneratedServiceFiles(serviceAnswers({
+      persistenceLayer: 'Plain JDBC',
+      database: 'Oracle'
+    }), 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/jdbc/JdbcOrderRepositoryAdapter.java'
+  );
+  const jooq = generatedFile(
+    renderGeneratedServiceFiles(serviceAnswers({
+      persistenceLayer: 'jOOQ',
+      database: 'Oracle'
+    }), 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/jooq/JooqOrderRepositoryAdapter.java'
+  );
+  const queryDsl = generatedFile(
+    renderGeneratedServiceFiles(serviceAnswers({
+      persistenceLayer: 'QueryDSL (JPA)',
+      database: 'Oracle'
+    }), 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/querydsl/QueryDslOrderRepositoryAdapter.java'
+  );
+  const r2dbc = generatedFile(
+    renderGeneratedServiceFiles(serviceAnswers({
+      stackMode: 'Reactive',
+      persistenceLayer: 'Spring Data R2DBC',
+      database: 'Oracle'
+    }), 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/r2dbc/R2dbcOrderRepositoryAdapter.java'
+  );
+
+  assert.match(jpa, /JpaRepository<OrderEntity, String>/);
+  assert.match(jpa, /repository\.findById\(id\.toString\(\)\)/);
+  assert.match(jpa, /private String id;/);
+  assert.match(jpa, /this\.id = order\.id\(\)\.toString\(\);/);
+  assert.match(jpa, /new Order\(UUID\.fromString\(id\), name\)/);
+
+  assert.match(jdbc, /order\.id\(\)\.toString\(\)/);
+  assert.match(jdbc, /UUID\.fromString\(row\.getString\("id"\)\)/);
+  assert.match(jdbc, /id\.toString\(\)\n\s*\)\.stream\(\)\.findFirst/);
+
+  assert.match(jooq, /Field<String> ID = field\("id", String\.class\)/);
+  assert.match(jooq, /\.set\(ID, order\.id\(\)\.toString\(\)\)/);
+  assert.match(jooq, /\.where\(ID\.eq\(id\.toString\(\)\)\)/);
+  assert.match(jooq, /new Order\(UUID\.fromString\(record\.get\(ID\)\), record\.get\(NAME\)\)/);
+
+  assert.match(queryDsl, /\.id\.eq\(id\.toString\(\)\)/);
+  assert.match(queryDsl, /String id;/);
+  assert.match(queryDsl, /this\.id = order\.id\(\)\.toString\(\);/);
+  assert.match(queryDsl, /new Order\(UUID\.fromString\(id\), name\)/);
+
+  assert.match(r2dbc, /\.bind\("id", order\.id\(\)\.toString\(\)\)/);
+  assert.match(r2dbc, /\.bind\("id", id\.toString\(\)\)/);
+  assert.match(r2dbc, /UUID\.fromString\(row\.get\("id", String\.class\)\)/);
 });
 
 test('JPA adapters use version-aware javax and jakarta persistence imports', () => {
@@ -629,12 +840,15 @@ test('accepts supported Java versions', () => {
   assert.equal(validateJavaVersion('17'), undefined);
   assert.equal(validateJavaVersion('21'), undefined);
   assert.equal(validateJavaVersion('25'), undefined);
+  assert.equal(validateJavaVersion('21', '2.7.18'), undefined);
 });
 
 test('rejects an unsupported Java version', () => {
   assert.match(validateJavaVersion('16'), /at least 17/);
   assert.match(validateJavaVersion('21.0'), /whole number/);
   assert.match(validateJavaVersion('twenty-one'), /whole number/);
+  assert.match(validateJavaVersion('22', '2.7.18'), /Spring Boot 2.*Java 21/i);
+  assert.match(validateJavaVersion('25', '2.7.18'), /Spring Boot 2.*Java 21/i);
 });
 
 test('accepts a safe service folder', () => {
@@ -674,6 +888,8 @@ test('rejects invalid Spring Boot versions', () => {
   assert.match(validateSpringBootVersion('3.5'), /semantic version/);
   assert.match(validateSpringBootVersion('v3.5.4'), /semantic version/);
   assert.match(validateSpringBootVersion('3.5.4.RELEASE'), /semantic version/);
+  assert.match(validateSpringBootVersion('1.5.22'), /major version must be 2 or 3/);
+  assert.match(validateSpringBootVersion('4.0.0'), /major version must be 2 or 3/);
 });
 
 test('accepts valid aggregate names', () => {
@@ -791,6 +1007,47 @@ test('renders reactive application configuration with an R2DBC URL', () => {
   assert.match(yaml, /r2dbc:\n    url: r2dbc:postgresql:\/\/localhost:5432\/appdb/);
   assert.doesNotMatch(yaml, /datasource:/);
   assert.doesNotMatch(yaml, /jdbc:/);
+});
+
+test('renders the SQL Server R2DBC URL with the mssql driver scheme', () => {
+  const yaml = renderApplicationYaml(serviceAnswers({
+    stackMode: 'Reactive',
+    persistenceLayer: 'Spring Data R2DBC',
+    database: 'MSSQL Server'
+  }));
+
+  assert.match(yaml, /url: r2dbc:mssql:\/\/localhost:1433\/appdb/);
+  assert.doesNotMatch(yaml, /r2dbc:sqlserver:/);
+});
+
+test('persistence None omits database output for both build tools and stack modes', () => {
+  const cases = [
+    ['Non-Reactive', 'Maven', 'Flyway'],
+    ['Non-Reactive', 'Gradle', 'Liquibase'],
+    ['Reactive', 'Maven', 'Liquibase'],
+    ['Reactive', 'Gradle', 'Flyway']
+  ];
+
+  for (const [stackMode, buildTool, migrationTool] of cases) {
+    const answers = serviceAnswers({
+      stackMode,
+      buildTool,
+      persistenceLayer: 'None',
+      database: 'Oracle',
+      migrationTool
+    });
+    const build = buildTool === 'Maven' ? renderPomXml(answers) : renderGradle(answers);
+    const yaml = renderApplicationYaml(answers);
+    const files = renderGeneratedServiceFiles(answers, 'com.example.orders');
+
+    assert.doesNotMatch(
+      build,
+      /spring-boot-starter-(?:data-jpa|data-r2dbc|jdbc|jooq)|querydsl|r2dbc|ojdbc|flyway|liquibase|spring-jdbc/i,
+      `${stackMode} ${buildTool}`
+    );
+    assert.equal(yaml, 'spring:\n  application:\n    name: order-service\n');
+    assert.equal(files.some((file) => file.path.includes('/db/')), false);
+  }
 });
 
 test('adds the JDBC migration driver and migration URL for reactive Flyway', () => {
