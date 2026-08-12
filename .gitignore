@@ -3,4 +3,5 @@ out/
 .vscode-test/
 .DS_Store
 .superpowers/
+.worktrees/
 *.vsix
