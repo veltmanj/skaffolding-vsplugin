@@ -20,6 +20,7 @@ const {
   persistenceOptions,
   renderApplicationYaml,
   renderGeneratedServiceFiles,
+  renderGeneratedTestFiles,
   renderGradle,
   renderPomXml,
   validateAggregateName,
@@ -62,6 +63,62 @@ function queryDslAnswers(buildTool) {
     persistenceLayer: 'QueryDSL (JPA)',
   });
 }
+
+test('Cucumber Maven and Gradle builds include the JUnit Platform engine and suite configuration', () => {
+  const mavenAnswers = serviceAnswers({ useTdd: true, buildTool: 'Maven' });
+  const gradleAnswers = serviceAnswers({ useTdd: true, buildTool: 'Gradle' });
+  const pom = renderPomXml(mavenAnswers);
+  const gradle = renderGradle(gradleAnswers);
+
+  assert.match(pom, /<cucumber\.version>[^<]+<\/cucumber\.version>/);
+  assert.match(pom, /<groupId>io\.cucumber<\/groupId>\s*<artifactId>cucumber-java<\/artifactId>\s*<version>\$\{cucumber\.version\}<\/version>\s*<scope>test<\/scope>/);
+  assert.match(pom, /<groupId>io\.cucumber<\/groupId>\s*<artifactId>cucumber-junit-platform-engine<\/artifactId>\s*<version>\$\{cucumber\.version\}<\/version>\s*<scope>test<\/scope>/);
+  assert.match(pom, /<groupId>org\.junit\.platform<\/groupId>\s*<artifactId>junit-platform-suite<\/artifactId>\s*<scope>test<\/scope>/);
+  assert.match(gradle, /testImplementation\("io\.cucumber:cucumber-java:[^"]+"\)/);
+  assert.match(gradle, /testImplementation\("io\.cucumber:cucumber-junit-platform-engine:[^"]+"\)/);
+  assert.match(gradle, /testImplementation\("org\.junit\.platform:junit-platform-suite"\)/);
+  assert.match(gradle, /tasks\.withType<Test>\s*\{\s*useJUnitPlatform\(\)/);
+});
+
+test('Cucumber feature, step, runner, and unit test files use the selected aggregate', () => {
+  const files = renderGeneratedTestFiles(
+    serviceAnswers({ useTdd: true, aggregateName: 'Invoice' }),
+    'com.example.orders'
+  );
+  const feature = generatedFile(files, 'src/test/resources/features/invoice.feature');
+  const steps = generatedFile(files, 'src/test/java/com/example/orders/InvoiceStepDefinitions.java');
+  const runner = generatedFile(files, 'src/test/java/com/example/orders/CucumberTest.java');
+  const unitTest = generatedFile(files, 'src/test/java/com/example/orders/InvoiceServiceTest.java');
+
+  assert.match(feature, /Feature: Manage Invoice/);
+  assert.match(feature, /Given a new Invoice named "Example Invoice"/);
+  assert.match(steps, /class InvoiceStepDefinitions/);
+  assert.match(steps, /new InvoiceService\(new TestInvoiceRepository\(\)\)/);
+  assert.match(steps, /@Given\("a new Invoice named \{string\}"\)/);
+  assert.match(runner, /@Suite/);
+  assert.match(runner, /@IncludeEngines\("cucumber"\)/);
+  assert.match(runner, /@SelectClasspathResource\("features"\)/);
+  assert.match(unitTest, /class InvoiceServiceTest/);
+  assert.match(unitTest, /creates_an_invoice_with_the_requested_name/);
+});
+
+test('reactive Cucumber steps and unit test use Mono and Flux repository contracts', () => {
+  const files = renderGeneratedTestFiles(
+    serviceAnswers({ useTdd: true, stackMode: 'Reactive' }),
+    'com.example.orders'
+  );
+  const steps = generatedFile(files, 'src/test/java/com/example/orders/OrderStepDefinitions.java');
+  const unitTest = generatedFile(files, 'src/test/java/com/example/orders/OrderServiceTest.java');
+
+  assert.match(steps, /import reactor\.core\.publisher\.Flux;/);
+  assert.match(steps, /import reactor\.core\.publisher\.Mono;/);
+  assert.match(steps, /Mono<Order> created/);
+  assert.match(steps, /created\.block\(\)/);
+  assert.match(steps, /Mono<Order> save\(Order order\)/);
+  assert.match(steps, /Flux<Order> findAll\(\)/);
+  assert.match(unitTest, /Mono<Order> created = service\.create\("Example Order"\)/);
+  assert.match(unitTest, /created\.block\(\)/);
+});
 
 test('generated files contain a persistence-free domain and repository port', () => {
   const files = renderGeneratedServiceFiles(serviceAnswers(), 'com.example.orders');

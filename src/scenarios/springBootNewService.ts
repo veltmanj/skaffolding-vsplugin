@@ -3,9 +3,11 @@ import * as vscode from 'vscode';
 import { createWorkspaceDirectory, resolveWorkspacePath } from './fileSafety';
 import { chooseFileWriteDecision, writeWorkspaceFileWithExplicitOverwrite } from './fileWriter';
 import { renderGeneratedServiceFiles } from './springBootServiceTemplates';
+import { renderGeneratedTestFiles } from './springBootTestTemplates';
 import { Scenario } from './types';
 
 export { javaPersistenceImport, persistencePackage, renderGeneratedServiceFiles } from './springBootServiceTemplates';
+export { renderGeneratedTestFiles } from './springBootTestTemplates';
 
 export type StackMode = 'Reactive' | 'Non-Reactive';
 type BuildTool = 'Maven' | 'Gradle';
@@ -18,6 +20,7 @@ const QUERYDSL_VERSION = '5.1.0';
 const REACTIVE_JOOQ_BOOT_2_VERSION = '3.17.35';
 const JAKARTA_PERSISTENCE_API_VERSION = '3.1.0';
 const JAVAX_PERSISTENCE_API_VERSION = '2.2';
+const CUCUMBER_VERSION = '7.20.1';
 
 export interface SpringServiceAnswers {
   stackMode: StackMode;
@@ -80,7 +83,8 @@ export const createSpringBootServiceScenario: Scenario = {
       },
       { path: 'src/main/resources/application.yml', content: renderApplicationYaml(answers) },
       { path: 'ARCHITECTURE_NOTES.md', content: renderArchitectureNotes(answers, appPackage) },
-      ...renderGeneratedServiceFiles(answers, appPackage)
+      ...renderGeneratedServiceFiles(answers, appPackage),
+      ...(answers.useTdd ? renderGeneratedTestFiles(answers, appPackage) : [])
     ];
 
     let createdCount = 0;
@@ -266,7 +270,8 @@ export function renderPomXml(a: SpringServiceAnswers): string {
 
   <properties>
     <java.version>${a.javaVersion}</java.version>
-  </properties>
+${a.useTdd ? `    <cucumber.version>${CUCUMBER_VERSION}</cucumber.version>
+` : ''}  </properties>
 
   <dependencies>
 ${deps}
@@ -275,6 +280,7 @@ ${deps}
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+${renderMavenTestDependencies(a)}
   </dependencies>
 
   <build>
@@ -300,6 +306,9 @@ export function renderGradle(a: SpringServiceAnswers): string {
 
 group = "${normalizePackage(a.basePackage)}"
 version = "0.0.1-SNAPSHOT"
+${a.useTdd ? `
+val cucumberVersion = "${CUCUMBER_VERSION}"
+` : ''}
 
 java {
     toolchain {
@@ -314,6 +323,7 @@ repositories {
 dependencies {
 ${deps}
   testImplementation("org.springframework.boot:spring-boot-starter-test")
+${renderGradleTestDependencies(a)}
 }
 
 tasks.withType<Test> {
@@ -418,6 +428,38 @@ function buildDependencyBlocks(a: SpringServiceAnswers): string {
   }
 
   return lines.join('\n');
+}
+
+function renderMavenTestDependencies(a: SpringServiceAnswers): string {
+  if (!a.useTdd) {
+    return '';
+  }
+  return `    <dependency>
+      <groupId>io.cucumber</groupId>
+      <artifactId>cucumber-java</artifactId>
+      <version>\${cucumber.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.cucumber</groupId>
+      <artifactId>cucumber-junit-platform-engine</artifactId>
+      <version>\${cucumber.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-suite</artifactId>
+      <scope>test</scope>
+    </dependency>`;
+}
+
+function renderGradleTestDependencies(a: SpringServiceAnswers): string {
+  if (!a.useTdd) {
+    return '';
+  }
+  return `  testImplementation("io.cucumber:cucumber-java:$cucumberVersion")
+  testImplementation("io.cucumber:cucumber-junit-platform-engine:$cucumberVersion")
+  testImplementation("org.junit.platform:junit-platform-suite")`;
 }
 
 function buildGradleDependencies(a: SpringServiceAnswers): string {
