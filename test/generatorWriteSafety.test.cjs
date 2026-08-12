@@ -207,7 +207,7 @@ test('Spring Boot service creation reports a mixed write sequence', async () => 
 
   assert.match(await fs.readFile(path.join(serviceRoot, 'pom.xml'), 'utf8'), /<project/);
   assert.equal(await fs.readFile(path.join(serviceRoot, 'src/main/resources/application.yml'), 'utf8'), 'keep this content');
-  assert.match(state.infoMessages.at(-1), /Files created: 6\. Files overwritten: 1\. Files skipped: 1\./);
+  assert.match(state.infoMessages.at(-1), /Files created: 7\. Files overwritten: 1\. Files skipped: 1\./);
 });
 
 test('Spring Boot service creation stops later writes after an earlier file is created', async () => {

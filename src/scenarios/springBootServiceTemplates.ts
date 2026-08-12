@@ -9,6 +9,10 @@ export function renderGeneratedServiceFiles(
   a: SpringServiceAnswers,
   appPackage: string
 ): GeneratedServiceFile[] {
+  if (a.stackMode === 'Reactive' && a.persistenceLayer === 'jOOQ'
+    && a.database !== 'PostgreSQL' && a.database !== 'H2') {
+    throw new Error('Reactive jOOQ supports only PostgreSQL and H2 with the generated OSS dependency.');
+  }
   const packagePath = appPackage.replaceAll('.', '/');
   const files: GeneratedServiceFile[] = [
     javaFile(packagePath, 'domain', a.aggregateName, renderDomainAggregate(a, appPackage)),
@@ -19,6 +23,10 @@ export function renderGeneratedServiceFiles(
   const adapter = renderPersistenceAdapter(a, appPackage);
   if (adapter) {
     files.push(adapter);
+  }
+  const migration = renderMigrationFile(a);
+  if (migration) {
+    files.push(migration);
   }
   return files;
 }
@@ -36,7 +44,7 @@ export function persistencePackage(a: SpringServiceAnswers): string {
     case 'QueryDSL (JPA)':
       return 'querydsl';
     case 'None':
-      return '';
+      return 'memory';
   }
 }
 
@@ -319,8 +327,81 @@ function renderPersistenceAdapter(
     case 'QueryDSL (JPA)':
       return javaFile(packagePath, 'infrastructure/querydsl', `QueryDsl${a.aggregateName}RepositoryAdapter`, renderQueryDslAdapter(a, appPackage));
     case 'None':
-      return undefined;
+      return javaFile(packagePath, 'infrastructure/memory', `InMemory${a.aggregateName}RepositoryAdapter`, renderInMemoryAdapter(a, appPackage));
   }
+}
+
+function renderInMemoryAdapter(a: SpringServiceAnswers, appPackage: string): string {
+  const aggregate = a.aggregateName;
+  const variable = variableName(aggregate);
+  if (a.stackMode === 'Reactive') {
+    return `package ${appPackage}.infrastructure.memory;
+
+import ${appPackage}.domain.${aggregate};
+import ${appPackage}.domain.${aggregate}Repository;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import org.springframework.stereotype.Repository;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+@Repository
+public class InMemory${aggregate}RepositoryAdapter implements ${aggregate}Repository {
+
+    private final ConcurrentMap<UUID, ${aggregate}> entries = new ConcurrentHashMap<>();
+
+    @Override
+    public Mono<${aggregate}> save(${aggregate} ${variable}) {
+        entries.put(${variable}.id(), ${variable});
+        return Mono.just(${variable});
+    }
+
+    @Override
+    public Mono<${aggregate}> findById(UUID id) {
+        return Mono.justOrEmpty(entries.get(id));
+    }
+
+    @Override
+    public Flux<${aggregate}> findAll() {
+        return Flux.fromIterable(entries.values());
+    }
+}
+`;
+  }
+  return `package ${appPackage}.infrastructure.memory;
+
+import ${appPackage}.domain.${aggregate};
+import ${appPackage}.domain.${aggregate}Repository;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public class InMemory${aggregate}RepositoryAdapter implements ${aggregate}Repository {
+
+    private final ConcurrentMap<UUID, ${aggregate}> entries = new ConcurrentHashMap<>();
+
+    @Override
+    public ${aggregate} save(${aggregate} ${variable}) {
+        entries.put(${variable}.id(), ${variable});
+        return ${variable};
+    }
+
+    @Override
+    public Optional<${aggregate}> findById(UUID id) {
+        return Optional.ofNullable(entries.get(id));
+    }
+
+    @Override
+    public List<${aggregate}> findAll() {
+        return List.copyOf(entries.values());
+    }
+}
+`;
 }
 
 function renderJpaAdapter(a: SpringServiceAnswers, appPackage: string): string {
@@ -548,15 +629,14 @@ import org.jooq.Table;
 import org.springframework.stereotype.Repository;
 
 import static org.jooq.impl.DSL.field;
-import static org.jooq.impl.DSL.name;
 import static org.jooq.impl.DSL.table;
 
 @Repository
 public class Jooq${aggregate}RepositoryAdapter implements ${aggregate}Repository {
 
-    private static final Table<Record> ${table.toUpperCase()} = table(name("${table}"));
-    private static final Field<UUID> ID = field(name("id"), UUID.class);
-    private static final Field<String> NAME = field(name("name"), String.class);
+    private static final Table<Record> ${table.toUpperCase()} = table("${table}");
+    private static final Field<UUID> ID = field("id", UUID.class);
+    private static final Field<String> NAME = field("name", String.class);
 
     private final DSLContext dsl;
 
@@ -566,12 +646,16 @@ public class Jooq${aggregate}RepositoryAdapter implements ${aggregate}Repository
 
     @Override
     public ${aggregate} save(${aggregate} ${variable}) {
-        dsl.insertInto(${table.toUpperCase()})
-            .set(ID, ${variable}.id())
+        int updated = dsl.update(${table.toUpperCase()})
             .set(NAME, ${variable}.name())
-            .onDuplicateKeyUpdate()
-            .set(NAME, ${variable}.name())
+            .where(ID.eq(${variable}.id()))
             .execute();
+        if (updated == 0) {
+            dsl.insertInto(${table.toUpperCase()})
+                .set(ID, ${variable}.id())
+                .set(NAME, ${variable}.name())
+                .execute();
+        }
         return ${variable};
     }
 
@@ -618,15 +702,14 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import static org.jooq.impl.DSL.field;
-import static org.jooq.impl.DSL.name;
 import static org.jooq.impl.DSL.table;
 
 @Repository
 public class Jooq${aggregate}RepositoryAdapter implements ${aggregate}Repository {
 
-    private static final Table<Record> ${tableConstant} = table(name("${table}"));
-    private static final Field<UUID> ID = field(name("id"), UUID.class);
-    private static final Field<String> NAME = field(name("name"), String.class);
+    private static final Table<Record> ${tableConstant} = table("${table}");
+    private static final Field<UUID> ID = field("id", UUID.class);
+    private static final Field<String> NAME = field("name", String.class);
 
     private final DSLContext dsl;
 
@@ -636,12 +719,15 @@ public class Jooq${aggregate}RepositoryAdapter implements ${aggregate}Repository
 
     @Override
     public Mono<${aggregate}> save(${aggregate} ${variable}) {
-        return Mono.from(dsl.insertInto(${tableConstant})
-            .set(ID, ${variable}.id())
+        return Mono.from(dsl.update(${tableConstant})
             .set(NAME, ${variable}.name())
-            .onDuplicateKeyUpdate()
-            .set(NAME, ${variable}.name()))
-            .thenReturn(${variable});
+            .where(ID.eq(${variable}.id())))
+            .flatMap(updated -> updated == 0
+                ? Mono.from(dsl.insertInto(${tableConstant})
+                    .set(ID, ${variable}.id())
+                    .set(NAME, ${variable}.name()))
+                    .thenReturn(${variable})
+                : Mono.just(${variable}));
     }
 
     @Override
@@ -755,6 +841,59 @@ class ${entity} {
 `;
 }
 
+function renderMigrationFile(a: SpringServiceAnswers): GeneratedServiceFile | undefined {
+  if (a.persistenceLayer === 'None' || a.migrationTool === 'None') {
+    return undefined;
+  }
+  const table = tableName(a.aggregateName);
+  const types = databaseColumnTypes(a);
+  if (a.migrationTool === 'Flyway') {
+    return {
+      path: `src/main/resources/db/migration/V1__create_${table}.sql`,
+      content: `CREATE TABLE ${table} (
+    id ${types.id} PRIMARY KEY,
+    name ${types.name} NOT NULL
+);
+`
+    };
+  }
+  return {
+    path: 'src/main/resources/db/changelog/db.changelog-master.yaml',
+    content: `databaseChangeLog:
+  - changeSet:
+      id: 1-create-${table}
+      author: skaffolding
+      changes:
+        - createTable:
+            tableName: ${table}
+            columns:
+              - column:
+                  name: id
+                  type: ${types.id}
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: name
+                  type: ${types.name}
+                  constraints:
+                    nullable: false
+`
+  };
+}
+
+function databaseColumnTypes(a: SpringServiceAnswers): { id: string; name: string } {
+  switch (a.database) {
+    case 'PostgreSQL':
+    case 'H2':
+      return { id: 'UUID', name: 'VARCHAR(255)' };
+    case 'MSSQL Server':
+      return { id: 'UNIQUEIDENTIFIER', name: 'VARCHAR(255)' };
+    case 'Oracle':
+      return { id: 'RAW(16)', name: 'VARCHAR2(255 CHAR)' };
+  }
+}
+
 function variableName(typeName: string): string {
   return typeName.charAt(0).toLowerCase() + typeName.slice(1);
 }
@@ -769,9 +908,7 @@ function sqlDialect(a: SpringServiceAnswers): string {
       return 'POSTGRES';
     case 'H2':
       return 'H2';
-    case 'MSSQL Server':
-      return 'SQLSERVER';
-    case 'Oracle':
-      return 'ORACLE';
+    default:
+      throw new Error('Reactive jOOQ supports only PostgreSQL and H2 with the generated OSS dependency.');
   }
 }

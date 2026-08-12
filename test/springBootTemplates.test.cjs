@@ -13,6 +13,7 @@ Module._load = function loadVscodeMock(request, parent, isMain) {
 
 const {
   SPRING_BOOT_VERSION,
+  databaseOptions,
   defaultAggregateName,
   javaPersistenceImport,
   persistencePackage,
@@ -105,6 +106,36 @@ test('generated files select one non-reactive persistence adapter', () => {
   }
 });
 
+test('persistence None generates an in-memory repository bean', () => {
+  const answers = serviceAnswers({ persistenceLayer: 'None' });
+  const files = renderGeneratedServiceFiles(answers, 'com.example.orders');
+  const adapter = generatedFile(
+    files,
+    'src/main/java/com/example/orders/infrastructure/memory/InMemoryOrderRepositoryAdapter.java'
+  );
+
+  assert.equal(persistencePackage(answers), 'memory');
+  assert.match(adapter, /@Repository/);
+  assert.match(adapter, /implements OrderRepository/);
+  assert.match(adapter, /ConcurrentHashMap/);
+  assert.match(adapter, /Optional<Order> findById\(UUID id\)/);
+  assert.doesNotMatch(adapter, /JdbcTemplate|DSLContext|persistence\./);
+});
+
+test('reactive persistence None generates a reactive in-memory repository bean', () => {
+  const answers = serviceAnswers({ stackMode: 'Reactive', persistenceLayer: 'None' });
+  const files = renderGeneratedServiceFiles(answers, 'com.example.orders');
+  const adapter = generatedFile(
+    files,
+    'src/main/java/com/example/orders/infrastructure/memory/InMemoryOrderRepositoryAdapter.java'
+  );
+
+  assert.match(adapter, /Mono<Order> save\(Order order\)/);
+  assert.match(adapter, /Mono<Order> findById\(UUID id\)/);
+  assert.match(adapter, /Flux<Order> findAll\(\)/);
+  assert.match(adapter, /@Repository/);
+});
+
 test('reactive generated files use Mono Flux and a DatabaseClient R2DBC adapter', () => {
   const answers = serviceAnswers({
     stackMode: 'Reactive',
@@ -142,6 +173,131 @@ test('reactive jOOQ adapter configures DSLContext from the R2DBC ConnectionFacto
   assert.match(adapter, /Flux\.from\(/);
   assert.match(adapter, /Mono\.from\(/);
   assert.doesNotMatch(adapter, /DataSource|java\.sql\.Connection|spring-boot-starter-jooq/);
+});
+
+test('jOOQ adapters update then insert without relying on generated key metadata', () => {
+  const blocking = generatedFile(
+    renderGeneratedServiceFiles(serviceAnswers({ persistenceLayer: 'jOOQ' }), 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/jooq/JooqOrderRepositoryAdapter.java'
+  );
+  const reactive = generatedFile(
+    renderGeneratedServiceFiles(
+      serviceAnswers({ stackMode: 'Reactive', persistenceLayer: 'jOOQ' }),
+      'com.example.orders'
+    ),
+    'src/main/java/com/example/orders/infrastructure/jooq/JooqOrderRepositoryAdapter.java'
+  );
+
+  assert.match(blocking, /dsl\.update\(ORDERS\)/);
+  assert.match(blocking, /if \(updated == 0\)/);
+  assert.match(reactive, /Mono\.from\(dsl\.update\(ORDERS\)/);
+  assert.match(reactive, /flatMap\(updated -> updated == 0/);
+  assert.match(blocking, /table\("orders"\)/);
+  assert.match(blocking, /field\("id", UUID\.class\)/);
+  assert.doesNotMatch(`${blocking}\n${reactive}`, /onDuplicateKeyUpdate/);
+  assert.doesNotMatch(`${blocking}\n${reactive}`, /table\(name\(|field\(name\(/);
+});
+
+test('reactive jOOQ rejects databases unsupported by the OSS dialect', () => {
+  assert.deepEqual(databaseOptions('Reactive', 'jOOQ'), ['PostgreSQL', 'H2']);
+  assert.deepEqual(databaseOptions('Non-Reactive', 'jOOQ'), [
+    'PostgreSQL',
+    'H2',
+    'MSSQL Server',
+    'Oracle'
+  ]);
+
+  for (const database of ['MSSQL Server', 'Oracle']) {
+    assert.throws(
+      () => renderGeneratedServiceFiles(
+        serviceAnswers({ stackMode: 'Reactive', persistenceLayer: 'jOOQ', database }),
+        'com.example.orders'
+      ),
+      /Reactive jOOQ supports only PostgreSQL and H2/
+    );
+  }
+});
+
+test('Flyway generation creates a database-specific aggregate schema', () => {
+  const databaseTypes = [
+    ['PostgreSQL', 'UUID'],
+    ['H2', 'UUID'],
+    ['MSSQL Server', 'UNIQUEIDENTIFIER'],
+    ['Oracle', 'RAW(16)']
+  ];
+
+  for (const [database, idType] of databaseTypes) {
+    const files = renderGeneratedServiceFiles(
+      serviceAnswers({ persistenceLayer: 'Plain JDBC', migrationTool: 'Flyway', database }),
+      'com.example.orders'
+    );
+    const migration = generatedFile(files, 'src/main/resources/db/migration/V1__create_orders.sql');
+
+    assert.match(migration, /CREATE TABLE orders/);
+    assert.match(migration, new RegExp(`id ${idType.replace(/[()]/g, '\\$&')} PRIMARY KEY`));
+    assert.match(migration, /name (?:VARCHAR|VARCHAR2)\(255(?: CHAR)?\) NOT NULL/);
+  }
+});
+
+test('Spring Boot 3 Flyway builds include the selected database module', () => {
+  const modules = [
+    ['PostgreSQL', 'flyway-database-postgresql'],
+    ['MSSQL Server', 'flyway-sqlserver'],
+    ['Oracle', 'flyway-database-oracle']
+  ];
+
+  for (const [database, artifact] of modules) {
+    const answers = serviceAnswers({ persistenceLayer: 'Plain JDBC', migrationTool: 'Flyway', database });
+    assert.match(renderPomXml(answers), new RegExp(`<artifactId>${artifact}</artifactId>`));
+    assert.match(renderGradle({ ...answers, buildTool: 'Gradle' }), new RegExp(`org\\.flywaydb:${artifact}`));
+  }
+
+  const h2 = serviceAnswers({ persistenceLayer: 'Plain JDBC', migrationTool: 'Flyway', database: 'H2' });
+  const boot2 = serviceAnswers({
+    stackMode: 'Reactive',
+    springBootVersion: '2.7.18',
+    persistenceLayer: 'jOOQ',
+    migrationTool: 'Flyway',
+    database: 'PostgreSQL'
+  });
+  assert.doesNotMatch(renderPomXml(h2), /flyway-database-|flyway-sqlserver/);
+  assert.doesNotMatch(renderPomXml(boot2), /flyway-database-|flyway-sqlserver/);
+});
+
+test('Liquibase generation creates a database-specific aggregate changelog', () => {
+  const databaseTypes = [
+    ['PostgreSQL', 'UUID'],
+    ['H2', 'UUID'],
+    ['MSSQL Server', 'UNIQUEIDENTIFIER'],
+    ['Oracle', 'RAW(16)']
+  ];
+
+  for (const [database, idType] of databaseTypes) {
+    const files = renderGeneratedServiceFiles(
+      serviceAnswers({ persistenceLayer: 'Hibernate (JPA)', migrationTool: 'Liquibase', database }),
+      'com.example.orders'
+    );
+    const changelog = generatedFile(
+      files,
+      'src/main/resources/db/changelog/db.changelog-master.yaml'
+    );
+
+    assert.match(changelog, /tableName: orders/);
+    assert.match(changelog, new RegExp(`type: ${idType.replace(/[()]/g, '\\$&')}`));
+    assert.match(changelog, /primaryKey: true/);
+    assert.match(changelog, /name: name\n\s+type: (?:VARCHAR|VARCHAR2)\(255(?: CHAR)?\)/);
+  }
+});
+
+test('persistence None does not generate a database schema', () => {
+  for (const migrationTool of ['Flyway', 'Liquibase']) {
+    const files = renderGeneratedServiceFiles(
+      serviceAnswers({ persistenceLayer: 'None', migrationTool }),
+      'com.example.orders'
+    );
+
+    assert.equal(files.filter((file) => file.path.includes('/db/')).length, 0);
+  }
 });
 
 test('JPA adapters use version-aware javax and jakarta persistence imports', () => {
@@ -327,6 +483,19 @@ test('adds the ConnectionFactory and DSLContext dependencies for reactive jOOQ',
   assert.doesNotMatch(gradle, /spring-boot-starter-jooq/);
 });
 
+test('pins a reactive-capable jOOQ version for Spring Boot 2', () => {
+  const answers = serviceAnswers({
+    stackMode: 'Reactive',
+    springBootVersion: '2.7.18',
+    persistenceLayer: 'jOOQ'
+  });
+  const pom = renderPomXml(answers);
+  const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
+
+  assert.match(pom, /<groupId>org\.jooq<\/groupId>\s*<artifactId>jooq<\/artifactId>\s*<version>3\.17\.35<\/version>/);
+  assert.match(gradle, /implementation\("org\.jooq:jooq:3\.17\.35"\)/);
+});
+
 test('renders the selected non-reactive persistence dependencies without reactive dependencies', () => {
   const cases = [
     ['Hibernate (JPA)', /spring-boot-starter-data-jpa/, /spring-boot-starter-jdbc/],
@@ -374,6 +543,7 @@ test('adds the JDBC migration driver and migration URL for reactive Flyway', () 
 
   assert.match(pom, /<artifactId>r2dbc-postgresql<\/artifactId>/);
   assert.match(pom, /<artifactId>postgresql<\/artifactId>[\s\S]*<scope>runtime<\/scope>/);
+  assert.match(pom, /<groupId>org\.springframework<\/groupId>\s*<artifactId>spring-jdbc<\/artifactId>/);
   assert.match(yaml, /flyway:\n    enabled: true\n    url: jdbc:postgresql:\/\/localhost:5432\/appdb/);
 });
 

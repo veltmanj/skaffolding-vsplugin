@@ -10,11 +10,12 @@ export { javaPersistenceImport, persistencePackage, renderGeneratedServiceFiles 
 export type StackMode = 'Reactive' | 'Non-Reactive';
 type BuildTool = 'Maven' | 'Gradle';
 export type PersistenceLayer = 'None' | 'Hibernate (JPA)' | 'Plain JDBC' | 'Spring Data R2DBC' | 'jOOQ' | 'QueryDSL (JPA)';
-type Database = 'PostgreSQL' | 'H2' | 'MSSQL Server' | 'Oracle';
+export type Database = 'PostgreSQL' | 'H2' | 'MSSQL Server' | 'Oracle';
 type MigrationTool = 'None' | 'Flyway' | 'Liquibase';
 
 export const SPRING_BOOT_VERSION = '3.5.4';
 const QUERYDSL_VERSION = '5.1.0';
+const REACTIVE_JOOQ_BOOT_2_VERSION = '3.17.35';
 const JAKARTA_PERSISTENCE_API_VERSION = '3.1.0';
 const JAVAX_PERSISTENCE_API_VERSION = '2.2';
 
@@ -180,7 +181,7 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
     return undefined;
   }
 
-  const database = await pick<Database>('Database', ['PostgreSQL', 'H2', 'MSSQL Server', 'Oracle']);
+  const database = await pick<Database>('Database', databaseOptions(stackMode, persistenceLayer));
   if (!database) {
     return undefined;
   }
@@ -212,6 +213,13 @@ export function persistenceOptions(stackMode: StackMode): PersistenceLayer[] {
     return ['None', 'Spring Data R2DBC', 'jOOQ'];
   }
   return ['None', 'Hibernate (JPA)', 'Plain JDBC', 'jOOQ', 'QueryDSL (JPA)'];
+}
+
+export function databaseOptions(stackMode: StackMode, persistenceLayer: PersistenceLayer): Database[] {
+  if (stackMode === 'Reactive' && persistenceLayer === 'jOOQ') {
+    return ['PostgreSQL', 'H2'];
+  }
+  return ['PostgreSQL', 'H2', 'MSSQL Server', 'Oracle'];
 }
 
 export function defaultAggregateName(serviceName: string): string {
@@ -381,7 +389,7 @@ function buildDependencyBlocks(a: SpringServiceAnswers): string {
   }
   if (a.persistenceLayer === 'jOOQ') {
     if (a.stackMode === 'Reactive') {
-      lines.push(dependencyXml('jooq', 'org.jooq'));
+      lines.push(dependencyXml('jooq', 'org.jooq', reactiveJooqVersion(a)));
       lines.push(dependencyXml('spring-boot-starter-data-r2dbc'));
     } else {
       lines.push(dependencyXml('spring-boot-starter-jooq'));
@@ -395,10 +403,15 @@ function buildDependencyBlocks(a: SpringServiceAnswers): string {
     lines.push(driverDependencyXml(a.database, reactivePersistence));
   }
   if (a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
+    lines.push(dependencyXml('spring-jdbc', 'org.springframework'));
     lines.push(driverDependencyXml(a.database, false));
   }
   if (a.migrationTool === 'Flyway') {
     lines.push(dependencyXml('flyway-core', 'org.flywaydb'));
+    const databaseModule = flywayDatabaseModule(a);
+    if (databaseModule) {
+      lines.push(dependencyXml(databaseModule, 'org.flywaydb'));
+    }
   }
   if (a.migrationTool === 'Liquibase') {
     lines.push(dependencyXml('liquibase-core', 'org.liquibase'));
@@ -432,7 +445,8 @@ function buildGradleDependencies(a: SpringServiceAnswers): string {
   }
   if (a.persistenceLayer === 'jOOQ') {
     if (a.stackMode === 'Reactive') {
-      lines.push(gradleDependency('org.jooq:jooq'));
+      const version = reactiveJooqVersion(a);
+      lines.push(gradleDependency(`org.jooq:jooq${version ? `:${version}` : ''}`));
       lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-data-r2dbc'));
     } else {
       lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-jooq'));
@@ -446,10 +460,15 @@ function buildGradleDependencies(a: SpringServiceAnswers): string {
     lines.push(gradleDependency(driverCoordinate(a.database, reactivePersistence), 'runtimeOnly'));
   }
   if (a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
+    lines.push(gradleDependency('org.springframework:spring-jdbc'));
     lines.push(gradleDependency(driverCoordinate(a.database, false), 'runtimeOnly'));
   }
   if (a.migrationTool === 'Flyway') {
     lines.push(gradleDependency('org.flywaydb:flyway-core'));
+    const databaseModule = flywayDatabaseModule(a);
+    if (databaseModule) {
+      lines.push(gradleDependency(`org.flywaydb:${databaseModule}`));
+    }
   }
   if (a.migrationTool === 'Liquibase') {
     lines.push(gradleDependency('org.liquibase:liquibase-core'));
@@ -458,8 +477,30 @@ function buildGradleDependencies(a: SpringServiceAnswers): string {
   return lines.join('\n');
 }
 
-function dependencyXml(artifactId: string, groupId = 'org.springframework.boot'): string {
-  return `    <dependency>\n      <groupId>${groupId}</groupId>\n      <artifactId>${artifactId}</artifactId>\n    </dependency>`;
+function dependencyXml(artifactId: string, groupId = 'org.springframework.boot', version?: string): string {
+  const renderedVersion = version ? `\n      <version>${version}</version>` : '';
+  return `    <dependency>\n      <groupId>${groupId}</groupId>\n      <artifactId>${artifactId}</artifactId>${renderedVersion}\n    </dependency>`;
+}
+
+function reactiveJooqVersion(a: SpringServiceAnswers): string | undefined {
+  return a.springBootVersion.startsWith('2.') ? REACTIVE_JOOQ_BOOT_2_VERSION : undefined;
+}
+
+function flywayDatabaseModule(a: SpringServiceAnswers): string | undefined {
+  if (a.migrationTool !== 'Flyway' || a.springBootVersion.startsWith('2.')) {
+    return undefined;
+  }
+
+  switch (a.database) {
+    case 'PostgreSQL':
+      return 'flyway-database-postgresql';
+    case 'MSSQL Server':
+      return 'flyway-sqlserver';
+    case 'Oracle':
+      return 'flyway-database-oracle';
+    case 'H2':
+      return undefined;
+  }
 }
 
 export function persistenceNamespace(version: string): 'javax' | 'jakarta' {
