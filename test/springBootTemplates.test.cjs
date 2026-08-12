@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const Module = require('node:module');
+const os = require('node:os');
+const path = require('node:path');
 
 const originalLoad = Module._load;
 Module._load = function loadVscodeMock(request, parent, isMain) {
@@ -118,6 +122,74 @@ test('reactive Cucumber steps and unit test use Mono and Flux repository contrac
   assert.match(steps, /Flux<Order> findAll\(\)/);
   assert.match(unitTest, /Mono<Order> created = service\.create\("Example Order"\)/);
   assert.match(unitTest, /created\.block\(\)/);
+});
+
+test('Maven executes the generated Cucumber scenario and reports all steps', { timeout: 120_000 }, (t) => {
+  const mavenVersion = spawnSync('mvn', ['--version'], { encoding: 'utf8' });
+  if (mavenVersion.error?.code === 'ENOENT') {
+    t.skip('Maven is not installed');
+    return;
+  }
+  assert.equal(
+    mavenVersion.status,
+    0,
+    `Unable to run Maven:\n${mavenVersion.stdout}${mavenVersion.stderr}`
+  );
+
+  const projectDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'skaffolding-maven-cucumber-'));
+  t.after(() => fs.rmSync(projectDirectory, { recursive: true, force: true }));
+  const answers = serviceAnswers({
+    useTdd: true,
+    buildTool: 'Maven',
+    javaVersion: '17',
+    persistenceLayer: 'None',
+    database: 'H2'
+  });
+  const files = [
+    { path: 'pom.xml', content: renderPomXml(answers) },
+    ...renderGeneratedServiceFiles(answers, 'com.example.orders'),
+    ...renderGeneratedTestFiles(answers, 'com.example.orders')
+  ];
+
+  for (const file of files) {
+    const destination = path.join(projectDirectory, file.path);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, file.content);
+  }
+
+  const mavenTest = spawnSync(
+    'mvn',
+    ['-q', 'test', '-Dcucumber.plugin=json:target/cucumber.json'],
+    { cwd: projectDirectory, encoding: 'utf8', timeout: 120_000 }
+  );
+  assert.equal(
+    mavenTest.status,
+    0,
+    `Generated Maven project failed:\n${mavenTest.stdout}${mavenTest.stderr}`
+  );
+
+  const surefireReport = fs.readFileSync(
+    path.join(
+      projectDirectory,
+      'target/surefire-reports/TEST-com.example.orders.CucumberTest.xml'
+    ),
+    'utf8'
+  );
+  const surefireScenarioCount = surefireReport.match(
+    /<testsuite[^>]*\btests="(\d+)"/
+  )?.[1];
+  assert.equal(surefireScenarioCount, '1');
+
+  const cucumberReport = JSON.parse(
+    fs.readFileSync(path.join(projectDirectory, 'target/cucumber.json'), 'utf8')
+  );
+  const scenarios = cucumberReport.flatMap((feature) => feature.elements ?? []);
+  assert.equal(scenarios.length, 1);
+  assert.equal(scenarios[0].steps.length, 3);
+  assert.deepEqual(
+    scenarios[0].steps.map((step) => step.result.status),
+    ['passed', 'passed', 'passed']
+  );
 });
 
 test('generated files contain a persistence-free domain and repository port', () => {

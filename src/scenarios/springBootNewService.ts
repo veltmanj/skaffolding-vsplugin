@@ -21,6 +21,7 @@ const REACTIVE_JOOQ_BOOT_2_VERSION = '3.17.35';
 const JAKARTA_PERSISTENCE_API_VERSION = '3.1.0';
 const JAVAX_PERSISTENCE_API_VERSION = '2.2';
 const CUCUMBER_VERSION = '7.20.1';
+const MAVEN_SUREFIRE_VERSION = '3.5.4';
 
 export interface SpringServiceAnswers {
   stackMode: StackMode;
@@ -289,6 +290,7 @@ ${renderMavenTestDependencies(a)}
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
       </plugin>
+${renderMavenTestPlugin(a)}
 ${queryDslCompilerPlugin}
     </plugins>
   </build>
@@ -460,6 +462,24 @@ function renderGradleTestDependencies(a: SpringServiceAnswers): string {
   return `  testImplementation("io.cucumber:cucumber-java:$cucumberVersion")
   testImplementation("io.cucumber:cucumber-junit-platform-engine:$cucumberVersion")
   testImplementation("org.junit.platform:junit-platform-suite")`;
+}
+
+function renderMavenTestPlugin(a: SpringServiceAnswers): string {
+  if (!a.useTdd) {
+    return '';
+  }
+  return `      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${MAVEN_SUREFIRE_VERSION}</version>
+        <configuration>
+          <properties>
+            <configurationParameters>
+              cucumber.junit-platform.naming-strategy=long
+            </configurationParameters>
+          </properties>
+        </configuration>
+      </plugin>`;
 }
 
 function buildGradleDependencies(a: SpringServiceAnswers): string {
