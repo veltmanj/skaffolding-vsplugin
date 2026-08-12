@@ -61,11 +61,33 @@ different file appeared after approval.
 
 ### Spring Boot: Create Service
 
-This scenario asks for the service style, service name, folder, base package,
-Maven or Gradle, Java version, TDD settings, persistence, database, and
-migration tool. It creates the build file, `application.yml`, the main class,
-and `ARCHITECTURE_NOTES.md`. QueryDSL selection adds its API and annotation
+This scenario asks for the stack mode, service name, aggregate name, folder,
+base package, Maven or Gradle, an editable Spring Boot semantic version, Java
+version, TDD settings, persistence, database, and migration tool. The default
+Spring Boot version is `3.5.4`; entering another valid semantic version lets
+you generate compatible Boot 2.x or 3.x dependency coordinates where needed.
+
+It generates the build file, `application.yml`, main class, and
+`ARCHITECTURE_NOTES.md`, plus a clean-architecture starting point: a domain
+aggregate and repository port, an application service, a REST controller, and
+the selected infrastructure persistence adapter. The aggregate name controls
+the generated domain, application, web, persistence, migration, and test file
+names. Architecture notes record every selected option, including the Boot
+version and aggregate name.
+
+Reactive services use WebFlux. Their persistence prompt offers only `None`,
+Spring Data R2DBC, and jOOQ, so blocking JPA, JDBC, and QueryDSL options cannot
+be selected. Non-reactive services offer Hibernate (JPA), plain JDBC, jOOQ,
+and QueryDSL (JPA); QueryDSL adds the version-appropriate API and annotation
 processor configuration.
+
+With TDD enabled, the scenario generates a Cucumber feature, step definitions,
+JUnit Platform runner, unit test, and the required Cucumber build dependencies.
+With TDD disabled, it generates none of those Cucumber files or dependencies.
+Flyway creates an aggregate schema migration and Liquibase creates an aggregate
+changelog. Reactive migrations keep a JDBC migration connection alongside the
+application R2DBC connection. Selecting no persistence generates an in-memory
+adapter and no database schema.
 
 ### Spring Boot: Add SecurityConfig
 

@@ -6,10 +6,31 @@ const Module = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
 
+const springServiceScenarioState = {
+  workspaceRoot: '',
+  quickPicks: [],
+  inputBoxes: []
+};
+
+const vscode = {
+  Uri: {
+    file: (fsPath) => ({ fsPath })
+  },
+  window: {
+    showErrorMessage: async () => undefined,
+    showInformationMessage: async () => undefined,
+    showQuickPick: async () => springServiceScenarioState.quickPicks.shift(),
+    showInputBox: async () => springServiceScenarioState.inputBoxes.shift()
+  },
+  workspace: {
+    workspaceFolders: []
+  }
+};
+
 const originalLoad = Module._load;
 Module._load = function loadVscodeMock(request, parent, isMain) {
   if (request === 'vscode') {
-    return {};
+    return vscode;
   }
 
   return originalLoad.call(this, request, parent, isMain);
@@ -27,6 +48,7 @@ const {
   renderGeneratedTestFiles,
   renderGradle,
   renderPomXml,
+  createSpringBootServiceScenario,
   validateAggregateName,
   validateBasePackage,
   validateJavaVersion,
@@ -66,6 +88,17 @@ function queryDslAnswers(buildTool) {
     buildTool,
     persistenceLayer: 'QueryDSL (JPA)',
   });
+}
+
+async function generateSpringBootService({ quickPicks, inputBoxes }) {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'skaffolding-spring-service-'));
+  springServiceScenarioState.workspaceRoot = workspaceRoot;
+  springServiceScenarioState.quickPicks = quickPicks;
+  springServiceScenarioState.inputBoxes = inputBoxes;
+  vscode.workspace.workspaceFolders = [{ uri: vscode.Uri.file(workspaceRoot) }];
+
+  await createSpringBootServiceScenario.run({});
+  return workspaceRoot;
 }
 
 test('Cucumber Maven and Gradle builds include the JUnit Platform engine and suite configuration', () => {
@@ -122,6 +155,37 @@ test('reactive Cucumber steps and unit test use Mono and Flux repository contrac
   assert.match(steps, /Flux<Order> findAll\(\)/);
   assert.match(unitTest, /Mono<Order> created = service\.create\("Example Order"\)/);
   assert.match(unitTest, /created\.block\(\)/);
+});
+
+test('architecture notes record the selected Spring Boot version and aggregate name', async (t) => {
+  const workspaceRoot = await generateSpringBootService({
+    quickPicks: ['Reactive', 'Maven', 'No', 'Spring Data R2DBC', 'PostgreSQL', 'Flyway'],
+    inputBoxes: ['2.7.18', 'invoice-service', 'Invoice', 'services/invoice-service', 'com.example.invoices', '21']
+  });
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+
+  const notes = fs.readFileSync(
+    path.join(workspaceRoot, 'services/invoice-service/ARCHITECTURE_NOTES.md'),
+    'utf8'
+  );
+
+  assert.match(notes, /- Spring Boot version: 2\.7\.18/);
+  assert.match(notes, /- Aggregate name: Invoice/);
+});
+
+test('TDD-disabled service output omits Cucumber files and dependencies', async (t) => {
+  const workspaceRoot = await generateSpringBootService({
+    quickPicks: ['Non-Reactive', 'Gradle', 'No', 'Hibernate (JPA)', 'PostgreSQL', 'None'],
+    inputBoxes: ['2.7.18', 'catalog-service', 'Catalog', 'services/catalog-service', 'com.example.catalog', '17']
+  });
+  t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+
+  const serviceRoot = path.join(workspaceRoot, 'services/catalog-service');
+  const gradle = fs.readFileSync(path.join(serviceRoot, 'build.gradle.kts'), 'utf8');
+
+  assert.equal(fs.existsSync(path.join(serviceRoot, 'src/test/resources/features/catalog.feature')), false);
+  assert.equal(fs.existsSync(path.join(serviceRoot, 'src/test/java/com/example/catalog/CucumberTest.java')), false);
+  assert.doesNotMatch(gradle, /cucumber/i);
 });
 
 test('Maven executes and reports generated Cucumber success and failure', { timeout: 120_000 }, (t) => {
@@ -627,8 +691,13 @@ test('rejects invalid aggregate names', () => {
   assert.match(validateAggregateName('Order-Item'), /Java class name/);
 });
 
-test('returns reactive persistence options without blocking technologies', () => {
-  assert.deepEqual(persistenceOptions('Reactive'), ['None', 'Spring Data R2DBC', 'jOOQ']);
+test('reactive prompt options exclude blocking persistence technologies', () => {
+  const reactiveOptions = persistenceOptions('Reactive');
+
+  assert.deepEqual(reactiveOptions, ['None', 'Spring Data R2DBC', 'jOOQ']);
+  for (const blockingOption of ['Hibernate (JPA)', 'Plain JDBC', 'QueryDSL (JPA)']) {
+    assert.equal(reactiveOptions.includes(blockingOption), false);
+  }
   assert.deepEqual(persistenceOptions('Non-Reactive'), [
     'None',
     'Hibernate (JPA)',
