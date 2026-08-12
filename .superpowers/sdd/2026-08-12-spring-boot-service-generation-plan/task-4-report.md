@@ -251,3 +251,127 @@ for this runner/reporting path.
   covered by the Maven matrix, and the Gradle renderer output was not changed.
 - Cucumber remains at 7.20.1; upgrading it was not needed to fix this regression
   and is outside this fix round.
+
+---
+
+## Fix round 3: prove Maven propagates a generated scenario failure
+
+### Status and implementation commit
+
+Fix round 3 is implemented in `853c259` (`test: verify Maven propagates
+Cucumber failures`). No production generator or template source changed.
+
+### Regression-test change
+
+- The execution-level Maven smoke test still generates a complete TDD-enabled
+  project and verifies successful discovery through one Surefire scenario and
+  one Cucumber scenario with three passed steps.
+- Before that successful run, the test replaces the generated `Then` assertion
+  with `AssertionError("Intentional Cucumber smoke-test failure")`, runs
+  `mvn -q clean test`, and requires a non-zero process exit.
+- The failing run must also produce a Surefire report with one test and one
+  failure, containing the intentional marker, plus Cucumber JSON with exactly
+  one three-step scenario whose statuses are `passed`, `passed`, `failed`.
+  This distinguishes scenario failure propagation from an unrelated Maven
+  startup, compilation, or dependency failure.
+- All generated files live under a unique `fs.mkdtempSync` directory. A
+  `t.after` hook recursively removes it, and a `finally` block restores the
+  generated step fixture before the passing discovery run.
+- The test skips only for Maven `ENOENT`. An installed but unusable Maven, a
+  timeout, zero scenario discovery, or an unexpected successful failing run
+  fails the test.
+
+### Commands and observed output
+
+1. Starting state:
+
+   ```text
+   git rev-parse HEAD
+   e1caa7d69c891604f792f9d92e99fbfa9f35638c
+
+   git status --short
+   # no output
+   ```
+
+2. Focused execution smoke on the final test:
+
+   ```text
+   npm run compile && node --test --test-name-pattern="Maven executes and reports generated Cucumber" test/springBootTemplates.test.cjs
+
+   ✔ Maven executes and reports generated Cucumber success and failure (5509.915042ms)
+   ℹ intentional failing Maven exit: 1
+   ℹ tests 1
+   ℹ pass 1
+   ℹ fail 0
+   ℹ skipped 0
+   ℹ duration_ms 5557.281958
+   # exit 0
+   ```
+
+3. Discovery/failure-propagation mutation check. The production Surefire pin
+   was temporarily changed from 3.5.4 back to affected version 3.5.3, then the
+   same focused command was run. Maven incorrectly returned zero for the
+   deliberately failing scenario, and the new assertion caught it:
+
+   ```text
+   ✖ Maven executes and reports generated Cucumber success and failure
+   AssertionError [ERR_ASSERTION]: Maven must fail when a generated Cucumber step fails
+   actual: 0
+   expected: 0
+   operator: 'notStrictEqual'
+   tests 1
+   pass 0
+   fail 1
+   # exit 1
+   ```
+
+   The 3.5.4 value was restored immediately. A subsequent focused run passed,
+   and `git diff -- src/scenarios/springBootNewService.ts` produced no output.
+
+4. Full extension suite:
+
+   ```text
+   npm test
+
+   ✔ Cucumber Maven and Gradle builds include the JUnit Platform engine and suite configuration
+   ✔ reactive Cucumber steps and unit test use Mono and Flux repository contracts
+   ✔ Maven executes and reports generated Cucumber success and failure (5177.139041ms)
+   ℹ intentional failing Maven exit: 1
+   ℹ tests 149
+   ℹ pass 149
+   ℹ fail 0
+   ℹ skipped 0
+   ℹ duration_ms 5334.332583
+   # exit 0
+   ```
+
+5. Production-renderer preservation and whitespace checks before the report
+   edit:
+
+   ```text
+   git diff --name-only
+   test/springBootTemplates.test.cjs
+
+   git diff -- src/scenarios/springBootNewService.ts src/scenarios/springBootTestTemplates.ts
+   # no output
+
+   git diff --check
+   # no output; exit 0
+   ```
+
+   Therefore TDD-off generation and Gradle rendering are unchanged in this
+   round. Their existing renderer tests, including Gradle JUnit Platform wiring
+   and reactive/non-reactive template contracts, passed in the 149-test suite.
+
+### Review findings and concerns
+
+- Direct requirements and diff review found no critical or important issue.
+  No reviewer subagent surface was available in this workspace.
+- With Maven installed, the default npm suite now performs two generated Maven
+  builds (`clean test` for the deliberate failure, then `clean test` after
+  restoration). Locally the complete smoke took about 5.2 seconds. It still
+  depends on a compatible JDK and on dependencies being cached or reachable.
+- Gradle projects were not re-executed in this round because neither production
+  renderer nor template changed; Gradle wiring and reactive/non-reactive
+  behavior remain covered by unchanged renderer tests and the round-2
+  execution evidence above.
