@@ -13,6 +13,7 @@ type MigrationTool = 'None' | 'Flyway' | 'Liquibase';
 export const SPRING_BOOT_VERSION = '3.5.4';
 const QUERYDSL_VERSION = '5.1.0';
 const JAKARTA_PERSISTENCE_API_VERSION = '3.1.0';
+const JAVAX_PERSISTENCE_API_VERSION = '2.2';
 
 interface SpringServiceAnswers {
   stackMode: StackMode;
@@ -242,7 +243,7 @@ export function renderPomXml(a: SpringServiceAnswers): string {
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>${a.springBootVersion ?? SPRING_BOOT_VERSION}</version>
+    <version>${a.springBootVersion}</version>
     <relativePath/>
   </parent>
   <groupId>${normalizePackage(a.basePackage)}</groupId>
@@ -281,7 +282,7 @@ export function renderGradle(a: SpringServiceAnswers): string {
   const deps = buildGradleDependencies(a);
   return `plugins {
     java
-    id("org.springframework.boot") version "${a.springBootVersion ?? SPRING_BOOT_VERSION}"
+    id("org.springframework.boot") version "${a.springBootVersion}"
     id("io.spring.dependency-management") version "1.1.7"
 }
 
@@ -369,15 +370,17 @@ function buildDependencyBlocks(a: SpringServiceAnswers): string {
     lines.push(dependencyXml('spring-boot-starter-data-jpa'));
   }
   if (a.persistenceLayer === 'QueryDSL (JPA)') {
-    lines.push(queryDslDependencyXml('querydsl-jpa'));
+    lines.push(queryDslDependencyXml(a));
   }
   if (a.persistenceLayer === 'Plain JDBC') {
     lines.push(dependencyXml('spring-boot-starter-jdbc'));
   }
   if (a.persistenceLayer === 'jOOQ') {
-    lines.push(dependencyXml('spring-boot-starter-jooq'));
     if (a.stackMode === 'Reactive') {
+      lines.push(dependencyXml('jooq', 'org.jooq'));
       lines.push(dependencyXml('spring-boot-starter-data-r2dbc'));
+    } else {
+      lines.push(dependencyXml('spring-boot-starter-jooq'));
     }
   }
   if (a.persistenceLayer === 'Spring Data R2DBC') {
@@ -410,17 +413,25 @@ function buildGradleDependencies(a: SpringServiceAnswers): string {
     lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-data-jpa'));
   }
   if (a.persistenceLayer === 'QueryDSL (JPA)') {
-    lines.push(gradleDependency(`com.querydsl:querydsl-jpa:${QUERYDSL_VERSION}:jakarta`));
-    lines.push(gradleDependency(`com.querydsl:querydsl-apt:${QUERYDSL_VERSION}:jakarta`, 'annotationProcessor'));
-    lines.push(gradleDependency(`jakarta.persistence:jakarta.persistence-api:${JAKARTA_PERSISTENCE_API_VERSION}`, 'annotationProcessor'));
+    const namespace = persistenceNamespace(a.springBootVersion);
+    const queryDslJpa = namespace === 'jakarta'
+      ? `com.querydsl:querydsl-jpa:${QUERYDSL_VERSION}:jakarta`
+      : `com.querydsl:querydsl-jpa:${QUERYDSL_VERSION}`;
+    const queryDslAptClassifier = namespace === 'jakarta' ? 'jakarta' : 'jpa';
+    const persistenceApi = persistenceApiCoordinate(namespace);
+    lines.push(gradleDependency(queryDslJpa));
+    lines.push(gradleDependency(`com.querydsl:querydsl-apt:${QUERYDSL_VERSION}:${queryDslAptClassifier}`, 'annotationProcessor'));
+    lines.push(gradleDependency(`${persistenceApi.groupId}:${persistenceApi.artifactId}:${persistenceApi.version}`, 'annotationProcessor'));
   }
   if (a.persistenceLayer === 'Plain JDBC') {
     lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-jdbc'));
   }
   if (a.persistenceLayer === 'jOOQ') {
-    lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-jooq'));
     if (a.stackMode === 'Reactive') {
+      lines.push(gradleDependency('org.jooq:jooq'));
       lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-data-r2dbc'));
+    } else {
+      lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-jooq'));
     }
   }
   if (a.persistenceLayer === 'Spring Data R2DBC') {
@@ -447,8 +458,13 @@ function dependencyXml(artifactId: string, groupId = 'org.springframework.boot')
   return `    <dependency>\n      <groupId>${groupId}</groupId>\n      <artifactId>${artifactId}</artifactId>\n    </dependency>`;
 }
 
-function queryDslDependencyXml(artifactId: string): string {
-  return `    <dependency>\n      <groupId>com.querydsl</groupId>\n      <artifactId>${artifactId}</artifactId>\n      <version>${QUERYDSL_VERSION}</version>\n      <classifier>jakarta</classifier>\n    </dependency>`;
+export function persistenceNamespace(version: string): 'javax' | 'jakarta' {
+  return version.startsWith('2.') ? 'javax' : 'jakarta';
+}
+
+function queryDslDependencyXml(a: SpringServiceAnswers): string {
+  const classifier = persistenceNamespace(a.springBootVersion) === 'jakarta' ? '\n      <classifier>jakarta</classifier>' : '';
+  return `    <dependency>\n      <groupId>com.querydsl</groupId>\n      <artifactId>querydsl-jpa</artifactId>\n      <version>${QUERYDSL_VERSION}</version>${classifier}\n    </dependency>`;
 }
 
 function renderQueryDslMavenCompilerPlugin(a: SpringServiceAnswers): string {
@@ -456,6 +472,9 @@ function renderQueryDslMavenCompilerPlugin(a: SpringServiceAnswers): string {
     return '';
   }
 
+  const namespace = persistenceNamespace(a.springBootVersion);
+  const queryDslAptClassifier = namespace === 'jakarta' ? 'jakarta' : 'jpa';
+  const persistenceApi = persistenceApiCoordinate(namespace);
   return `      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
@@ -465,16 +484,22 @@ function renderQueryDslMavenCompilerPlugin(a: SpringServiceAnswers): string {
               <groupId>com.querydsl</groupId>
               <artifactId>querydsl-apt</artifactId>
               <version>${QUERYDSL_VERSION}</version>
-              <classifier>jakarta</classifier>
+              <classifier>${queryDslAptClassifier}</classifier>
             </path>
             <path>
-              <groupId>jakarta.persistence</groupId>
-              <artifactId>jakarta.persistence-api</artifactId>
-              <version>${JAKARTA_PERSISTENCE_API_VERSION}</version>
+              <groupId>${persistenceApi.groupId}</groupId>
+              <artifactId>${persistenceApi.artifactId}</artifactId>
+              <version>${persistenceApi.version}</version>
             </path>
           </annotationProcessorPaths>
         </configuration>
       </plugin>`;
+}
+
+function persistenceApiCoordinate(namespace: 'javax' | 'jakarta'): { groupId: string; artifactId: string; version: string } {
+  return namespace === 'jakarta'
+    ? { groupId: 'jakarta.persistence', artifactId: 'jakarta.persistence-api', version: JAKARTA_PERSISTENCE_API_VERSION }
+    : { groupId: 'javax.persistence', artifactId: 'javax.persistence-api', version: JAVAX_PERSISTENCE_API_VERSION };
 }
 
 function driverDependencyXml(database: Database, reactive: boolean): string {

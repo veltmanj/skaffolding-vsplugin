@@ -34,9 +34,11 @@ function queryDslAnswers(buildTool) {
     folderName: 'services/order-service',
     basePackage: 'com.example.orders',
     buildTool,
+    springBootVersion: '3.5.4',
     javaVersion: '21',
     useTdd: false,
     tddTool: 'Cucumber',
+    aggregateName: 'Order',
     persistenceLayer: 'QueryDSL (JPA)',
     database: 'PostgreSQL',
     migrationTool: 'None'
@@ -65,13 +67,30 @@ test('adds the Jakarta Persistence API to QueryDSL processor paths', () => {
   assert.match(gradle, /annotationProcessor\("jakarta\.persistence:jakarta\.persistence-api:3\.1\.0"\)/);
 });
 
-test('renders one Spring Boot version in Maven and Gradle output', () => {
-  const pom = renderPomXml(queryDslAnswers('Maven'));
-  const gradle = renderGradle(queryDslAnswers('Gradle'));
+test('renders javax QueryDSL and Persistence API coordinates for Spring Boot 2.x', () => {
+  const answers = { ...queryDslAnswers('Maven'), springBootVersion: '2.7.18' };
+  const pom = renderPomXml(answers);
+  const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
+
+  assert.match(pom, /<groupId>com\.querydsl<\/groupId>\s*<artifactId>querydsl-jpa<\/artifactId>\s*<version>5\.1\.0<\/version>\s*<\/dependency>/);
+  assert.match(pom, /<artifactId>maven-compiler-plugin<\/artifactId>[\s\S]*<groupId>com\.querydsl<\/groupId>\s*<artifactId>querydsl-apt<\/artifactId>\s*<version>5\.1\.0<\/version>\s*<classifier>jpa<\/classifier>[\s\S]*<groupId>javax\.persistence<\/groupId>\s*<artifactId>javax\.persistence-api<\/artifactId>\s*<version>2\.2<\/version>/);
+  assert.match(gradle, /implementation\("com\.querydsl:querydsl-jpa:5\.1\.0"\)/);
+  assert.match(gradle, /annotationProcessor\("com\.querydsl:querydsl-apt:5\.1\.0:jpa"\)/);
+  assert.match(gradle, /annotationProcessor\("javax\.persistence:javax\.persistence-api:2\.2"\)/);
+  assert.doesNotMatch(pom, /jakarta\.persistence/);
+  assert.doesNotMatch(gradle, /jakarta/);
+});
+
+test('renders the selected Spring Boot version in Maven and Gradle output', () => {
+  const answers = { ...queryDslAnswers('Maven'), springBootVersion: '2.7.18' };
+  const pom = renderPomXml(answers);
+  const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
 
   assert.equal(SPRING_BOOT_VERSION, '3.5.4');
-  assert.match(pom, new RegExp(`<version>${SPRING_BOOT_VERSION}<\\/version>`));
-  assert.match(gradle, new RegExp(`id\\("org\\.springframework\\.boot"\\) version "${SPRING_BOOT_VERSION}"`));
+  assert.match(pom, /<version>2\.7\.18<\/version>/);
+  assert.match(gradle, /id\("org\.springframework\.boot"\) version "2\.7\.18"/);
+  assert.doesNotMatch(pom, /<version>3\.5\.4<\/version>/);
+  assert.doesNotMatch(gradle, /version "3\.5\.4"/);
 });
 
 test('accepts supported Java versions', () => {
@@ -160,6 +179,7 @@ test('renders R2DBC starter and PostgreSQL driver for reactive Spring Data R2DBC
   const pom = renderPomXml(answers);
   const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
 
+  assert.match(pom, /<artifactId>spring-boot-starter-webflux<\/artifactId>/);
   assert.match(pom, /<artifactId>spring-boot-starter-data-r2dbc<\/artifactId>/);
   assert.match(pom, /<groupId>org.postgresql<\/groupId>\s*<artifactId>r2dbc-postgresql<\/artifactId>/);
   assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-data-r2dbc"\)/);
@@ -168,7 +188,7 @@ test('renders R2DBC starter and PostgreSQL driver for reactive Spring Data R2DBC
   assert.doesNotMatch(gradle, /postgresql:postgresql/);
 });
 
-test('adds R2DBC support and driver for reactive jOOQ', () => {
+test('adds the ConnectionFactory and DSLContext dependencies for reactive jOOQ', () => {
   const answers = {
     ...queryDslAnswers('Maven'),
     stackMode: 'Reactive',
@@ -177,12 +197,38 @@ test('adds R2DBC support and driver for reactive jOOQ', () => {
   const pom = renderPomXml(answers);
   const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
 
-  assert.match(pom, /<artifactId>spring-boot-starter-jooq<\/artifactId>/);
+  assert.match(pom, /<artifactId>spring-boot-starter-webflux<\/artifactId>/);
+  assert.match(pom, /<groupId>org\.jooq<\/groupId>\s*<artifactId>jooq<\/artifactId>/);
   assert.match(pom, /<artifactId>spring-boot-starter-data-r2dbc<\/artifactId>/);
   assert.match(pom, /<artifactId>r2dbc-postgresql<\/artifactId>/);
-  assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-jooq"\)/);
+  assert.match(gradle, /implementation\("org\.jooq:jooq"\)/);
   assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-data-r2dbc"\)/);
   assert.match(gradle, /runtimeOnly\("org\.postgresql:r2dbc-postgresql"\)/);
+  assert.doesNotMatch(pom, /spring-boot-starter-jooq/);
+  assert.doesNotMatch(gradle, /spring-boot-starter-jooq/);
+});
+
+test('renders the selected non-reactive persistence dependencies without reactive dependencies', () => {
+  const cases = [
+    ['Hibernate (JPA)', /spring-boot-starter-data-jpa/, /spring-boot-starter-jdbc/],
+    ['Plain JDBC', /spring-boot-starter-jdbc/, /spring-boot-starter-data-jpa/],
+    ['jOOQ', /spring-boot-starter-jooq/, /spring-boot-starter-data-r2dbc/],
+    ['QueryDSL (JPA)', /querydsl-jpa/, /spring-boot-starter-data-r2dbc/]
+  ];
+
+  for (const [persistenceLayer, expected, excluded] of cases) {
+    const pom = renderPomXml({ ...queryDslAnswers('Maven'), persistenceLayer });
+    const gradle = renderGradle({ ...queryDslAnswers('Gradle'), persistenceLayer });
+
+    assert.match(pom, expected);
+    assert.match(gradle, expected);
+    assert.doesNotMatch(pom, excluded);
+    assert.doesNotMatch(gradle, excluded);
+    if (persistenceLayer !== 'QueryDSL (JPA)') {
+      assert.doesNotMatch(pom, /annotationProcessorPaths/);
+      assert.doesNotMatch(gradle, /annotationProcessor\(/);
+    }
+  }
 });
 
 test('renders reactive application configuration with an R2DBC URL', () => {
