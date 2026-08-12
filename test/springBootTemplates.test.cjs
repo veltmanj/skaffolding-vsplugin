@@ -13,10 +13,13 @@ Module._load = function loadVscodeMock(request, parent, isMain) {
 
 const {
   SPRING_BOOT_VERSION,
+  persistenceOptions,
   renderGradle,
   renderPomXml,
+  validateAggregateName,
   validateBasePackage,
   validateJavaVersion,
+  validateSpringBootVersion,
   validateServiceFolder,
   validateServiceName
 } = require('../out/scenarios/springBootNewService.js');
@@ -107,4 +110,36 @@ test('accepts a Maven-safe service name', () => {
 test('rejects an invalid service name', () => {
   assert.match(validateServiceName('../order-service'), /lowercase letters/);
   assert.match(validateServiceName('Order Service'), /lowercase letters/);
+});
+
+test('accepts supported Spring Boot versions', () => {
+  assert.equal(validateSpringBootVersion('2.7.18'), undefined);
+  assert.equal(validateSpringBootVersion('3.5.4'), undefined);
+});
+
+test('rejects invalid Spring Boot versions', () => {
+  assert.match(validateSpringBootVersion('3.5'), /semantic version/);
+  assert.match(validateSpringBootVersion('v3.5.4'), /semantic version/);
+  assert.match(validateSpringBootVersion('3.5.4.RELEASE'), /semantic version/);
+});
+
+test('accepts valid aggregate names', () => {
+  assert.equal(validateAggregateName('Order'), undefined);
+  assert.equal(validateAggregateName('OrderItem'), undefined);
+});
+
+test('rejects invalid aggregate names', () => {
+  assert.match(validateAggregateName('1Order'), /Java class name/);
+  assert.match(validateAggregateName('Order-Item'), /Java class name/);
+});
+
+test('returns reactive persistence options without blocking technologies', () => {
+  assert.deepEqual(persistenceOptions('Reactive'), ['None', 'Spring Data R2DBC', 'jOOQ']);
+  assert.deepEqual(persistenceOptions('Non-Reactive'), [
+    'None',
+    'Hibernate (JPA)',
+    'Plain JDBC',
+    'jOOQ',
+    'QueryDSL (JPA)'
+  ]);
 });

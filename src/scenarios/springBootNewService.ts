@@ -4,9 +4,9 @@ import { createWorkspaceDirectory, resolveWorkspacePath } from './fileSafety';
 import { chooseFileWriteDecision, writeWorkspaceFileWithExplicitOverwrite } from './fileWriter';
 import { Scenario } from './types';
 
-type StackMode = 'Reactive' | 'Non-Reactive';
+export type StackMode = 'Reactive' | 'Non-Reactive';
 type BuildTool = 'Maven' | 'Gradle';
-type PersistenceLayer = 'None' | 'Hibernate (JPA)' | 'Plain JDBC' | 'jOOQ' | 'QueryDSL (JPA)';
+export type PersistenceLayer = 'None' | 'Hibernate (JPA)' | 'Plain JDBC' | 'Spring Data R2DBC' | 'jOOQ' | 'QueryDSL (JPA)';
 type Database = 'PostgreSQL' | 'H2' | 'MSSQL Server' | 'Oracle';
 type MigrationTool = 'None' | 'Flyway' | 'Liquibase';
 
@@ -16,7 +16,9 @@ const JAKARTA_PERSISTENCE_API_VERSION = '3.1.0';
 
 interface SpringServiceAnswers {
   stackMode: StackMode;
+  springBootVersion: string;
   serviceName: string;
+  aggregateName: string;
   folderName: string;
   basePackage: string;
   buildTool: BuildTool;
@@ -118,8 +120,18 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
     return undefined;
   }
 
+  const springBootVersion = await input('Spring Boot version', SPRING_BOOT_VERSION, validateSpringBootVersion);
+  if (!springBootVersion) {
+    return undefined;
+  }
+
   const serviceName = await input('Service name', 'order-service', validateServiceName);
   if (!serviceName) {
+    return undefined;
+  }
+
+  const aggregateName = await input('Aggregate name', 'Order', validateAggregateName);
+  if (!aggregateName) {
     return undefined;
   }
 
@@ -158,13 +170,7 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
     tddTool = selectedTool;
   }
 
-  const persistenceLayer = await pick<PersistenceLayer>('Persistence layer', [
-    'None',
-    'Hibernate (JPA)',
-    'Plain JDBC',
-    'jOOQ',
-    'QueryDSL (JPA)'
-  ]);
+  const persistenceLayer = await pick<PersistenceLayer>('Persistence layer', persistenceOptions(stackMode));
   if (!persistenceLayer) {
     return undefined;
   }
@@ -181,7 +187,9 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
 
   return {
     stackMode,
+    springBootVersion,
     serviceName,
+    aggregateName,
     folderName,
     basePackage,
     buildTool,
@@ -192,6 +200,13 @@ async function askQuestions(): Promise<SpringServiceAnswers | undefined> {
     database,
     migrationTool
   };
+}
+
+export function persistenceOptions(stackMode: StackMode): PersistenceLayer[] {
+  if (stackMode === 'Reactive') {
+    return ['None', 'Spring Data R2DBC', 'jOOQ'];
+  }
+  return ['None', 'Hibernate (JPA)', 'Plain JDBC', 'jOOQ', 'QueryDSL (JPA)'];
 }
 
 async function pick<T extends string>(title: string, options: T[]): Promise<T | undefined> {
@@ -223,7 +238,7 @@ export function renderPomXml(a: SpringServiceAnswers): string {
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>${SPRING_BOOT_VERSION}</version>
+    <version>${a.springBootVersion ?? SPRING_BOOT_VERSION}</version>
     <relativePath/>
   </parent>
   <groupId>${normalizePackage(a.basePackage)}</groupId>
@@ -262,7 +277,7 @@ export function renderGradle(a: SpringServiceAnswers): string {
   const deps = buildGradleDependencies(a);
   return `plugins {
     java
-    id("org.springframework.boot") version "${SPRING_BOOT_VERSION}"
+    id("org.springframework.boot") version "${a.springBootVersion ?? SPRING_BOOT_VERSION}"
     id("io.spring.dependency-management") version "1.1.7"
 }
 
@@ -320,7 +335,9 @@ function renderArchitectureNotes(a: SpringServiceAnswers, pkg: string): string {
 
 ## Selected Options
 - Stack mode: ${a.stackMode}
+- Spring Boot version: ${a.springBootVersion}
 - Service name: ${a.serviceName}
+- Aggregate name: ${a.aggregateName}
 - Base package: ${pkg}
 - Build tool: ${a.buildTool}
 - Java version: ${a.javaVersion}
@@ -511,6 +528,20 @@ export function validateJavaVersion(value: string): string | undefined {
   }
   if (Number.parseInt(value, 10) < 17) {
     return 'Java version must be at least 17.';
+  }
+  return undefined;
+}
+
+export function validateSpringBootVersion(value: string): string | undefined {
+  if (!/^\d+\.\d+\.\d+$/.test(value)) {
+    return 'Spring Boot version must be a semantic version with three numeric parts.';
+  }
+  return undefined;
+}
+
+export function validateAggregateName(value: string): string | undefined {
+  if (!/^[A-Z][A-Za-z0-9]*$/.test(value)) {
+    return 'Aggregate name must be a valid Java class name starting with an uppercase letter.';
   }
   return undefined;
 }
