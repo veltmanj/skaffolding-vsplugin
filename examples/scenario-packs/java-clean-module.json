@@ -1,0 +1,38 @@
+{
+  "id": "java-clean-module",
+  "label": "Java: Add Clean Module Skeleton",
+  "description": "Create one clean-architecture module from JSON metadata.",
+  "prompts": [
+    {
+      "id": "moduleName",
+      "label": "Module name",
+      "type": "input",
+      "required": true,
+      "default": "billing"
+    },
+    {
+      "id": "basePackage",
+      "label": "Base package",
+      "type": "input",
+      "required": true,
+      "default": "com.example.billing"
+    },
+    {
+      "id": "useCaseName",
+      "label": "Use case class name",
+      "type": "input",
+      "required": true,
+      "default": "CreateInvoiceUseCase"
+    }
+  ],
+  "files": [
+    {
+      "path": "{{moduleName}}/src/main/java/{{basePackage}}/application/{{useCaseName}}.java",
+      "content": "package {{basePackage}}.application;\n\npublic class {{useCaseName}} {\n\n    public void execute() {\n        // TODO: implement\n    }\n}\n"
+    },
+    {
+      "path": "{{moduleName}}/README.md",
+      "content": "# {{moduleName}}\n\nGenerated from JSON scenario pack.\n"
+    }
+  ]
+}

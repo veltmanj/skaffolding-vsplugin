@@ -1,0 +1,75 @@
+{
+  "name": "skaffolding-vsplugin",
+  "displayName": "Skaffolding VS Plugin",
+  "description": "Scenario-driven project scaffolding extension for VS Code.",
+  "version": "0.0.1",
+  "publisher": "jeroenveltman",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeroenveltman/skaffolding-vsplugin.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "skaffold.runScenario",
+        "title": "Skaffold: Run Scenario"
+      },
+      {
+        "command": "skaffold.createScenarioPackTemplate",
+        "title": "Skaffold: Create Scenario Pack Template"
+      },
+      {
+        "command": "skaffold.createSpringBootService",
+        "title": "Skaffold: Create Spring Boot Service"
+      },
+      {
+        "command": "skaffold.createAzureDeploymentStarter",
+        "title": "Skaffold: Create Azure Deployment Starter"
+      },
+      {
+        "command": "skaffold.addSpringSecurityConfig",
+        "title": "Skaffold: Add Spring SecurityConfig"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "skaffold.runScenario",
+        "key": "cmd+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "editorTextFocus || explorerViewletVisible"
+      }
+    ],
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "**/.skaffold/scenario-packs/*.json"
+        ],
+        "url": "./schemas/scenario-pack.schema.json"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --out skaffolding-vsplugin.vsix",
+    "check:package": "node scripts/check-vsix.cjs",
+    "test": "npm run compile && node --test test/**/*.test.cjs",
+    "snapshots:update:azure": "npm run compile && node scripts/update-azure-snapshots.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "ajv": "^8.20.0",
+    "typescript": "^5.8.2"
+  }
+}

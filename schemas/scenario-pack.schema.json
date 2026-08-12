@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.skaffolding/scenario-pack.schema.json",
+  "title": "Skaffolding Scenario Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "label", "description", "prompts", "files"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Lowercase kebab-case id"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "type"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-zA-Z0-9]*$",
+            "description": "Lower-camel-case prompt id"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string",
+            "enum": ["input", "select", "boolean"]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "default": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "boolean"
+                }
+              },
+              "required": ["type"]
+            },
+            "then": {
+              "properties": {
+                "default": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "default": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "select"
+                }
+              },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["options"],
+              "properties": {
+                "options": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "else": {
+              "not": {
+                "required": ["options"]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?:(?!\\{\\{|\\}\\})[\\s\\S]|\\{\\{\\s*[a-z][a-zA-Z0-9]*\\s*\\}\\})*$"
+          },
+          "content": {
+            "type": "string",
+            "pattern": "^(?:(?!\\{\\{|\\}\\})[\\s\\S]|\\{\\{\\s*[a-z][a-zA-Z0-9]*\\s*\\}\\})*$"
+          }
+        }
+      }
+    }
+  }
+}

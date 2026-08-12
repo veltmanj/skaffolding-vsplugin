@@ -1,0 +1,17 @@
+**/*
+!out/extension.js
+!out/scenarioPacks/model.js
+!out/scenarioPacks/types.js
+!out/scenarioPacks/validation.js
+!out/scenarios/azureDeploymentStarter.js
+!out/scenarios/azureDeploymentTemplates.js
+!out/scenarios/fileSafety.js
+!out/scenarios/fileWriter.js
+!out/scenarios/registry.js
+!out/scenarios/scenarioPackRuntime.js
+!out/scenarios/scenarioPackTemplateCommand.js
+!out/scenarios/springBootNewService.js
+!out/scenarios/springSecurityConfig.js
+!out/scenarios/types.js
+!schemas/scenario-pack.schema.json
+!LICENSE
