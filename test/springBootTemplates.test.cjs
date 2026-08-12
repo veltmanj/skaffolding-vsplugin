@@ -14,8 +14,11 @@ Module._load = function loadVscodeMock(request, parent, isMain) {
 const {
   SPRING_BOOT_VERSION,
   defaultAggregateName,
+  javaPersistenceImport,
+  persistencePackage,
   persistenceOptions,
   renderApplicationYaml,
+  renderGeneratedServiceFiles,
   renderGradle,
   renderPomXml,
   validateAggregateName,
@@ -27,23 +30,139 @@ const {
 } = require('../out/scenarios/springBootNewService.js');
 Module._load = originalLoad;
 
-function queryDslAnswers(buildTool) {
+function serviceAnswers(overrides = {}) {
   return {
     stackMode: 'Non-Reactive',
     serviceName: 'order-service',
     folderName: 'services/order-service',
     basePackage: 'com.example.orders',
-    buildTool,
+    buildTool: 'Maven',
     springBootVersion: '3.5.4',
     javaVersion: '21',
     useTdd: false,
     tddTool: 'Cucumber',
     aggregateName: 'Order',
-    persistenceLayer: 'QueryDSL (JPA)',
+    persistenceLayer: 'Hibernate (JPA)',
     database: 'PostgreSQL',
-    migrationTool: 'None'
+    migrationTool: 'None',
+    ...overrides
   };
 }
+
+function generatedFile(files, expectedPath) {
+  const file = files.find((candidate) => candidate.path === expectedPath);
+  assert.ok(file, `Expected generated file ${expectedPath}`);
+  return file.content;
+}
+
+function queryDslAnswers(buildTool) {
+  return serviceAnswers({
+    buildTool,
+    persistenceLayer: 'QueryDSL (JPA)',
+  });
+}
+
+test('generated files contain a persistence-free domain and repository port', () => {
+  const files = renderGeneratedServiceFiles(serviceAnswers(), 'com.example.orders');
+  const aggregate = generatedFile(files, 'src/main/java/com/example/orders/domain/Order.java');
+  const repository = generatedFile(files, 'src/main/java/com/example/orders/domain/OrderRepository.java');
+  const service = generatedFile(files, 'src/main/java/com/example/orders/application/OrderService.java');
+  const controller = generatedFile(files, 'src/main/java/com/example/orders/web/OrderController.java');
+
+  assert.match(aggregate, /package com\.example\.orders\.domain;/);
+  assert.match(aggregate, /public final class Order/);
+  assert.match(aggregate, /private final UUID id;/);
+  assert.match(aggregate, /private final String name;/);
+  assert.match(repository, /interface OrderRepository/);
+  assert.match(repository, /Optional<Order> findById\(UUID id\)/);
+  assert.doesNotMatch(`${aggregate}\n${repository}`, /org\.springframework|javax\.persistence|jakarta\.persistence/);
+  assert.match(service, /class OrderService/);
+  assert.match(service, /Order create\(String name\)/);
+  assert.match(controller, /class OrderController/);
+  assert.match(controller, /@PostMapping/);
+  assert.match(controller, /@GetMapping\("\/\{id\}"\)/);
+});
+
+test('generated files select one non-reactive persistence adapter', () => {
+  const cases = [
+    ['Hibernate (JPA)', 'jpa', 'JpaOrderRepositoryAdapter.java', /JpaRepository/],
+    ['Plain JDBC', 'jdbc', 'JdbcOrderRepositoryAdapter.java', /JdbcTemplate/],
+    ['jOOQ', 'jooq', 'JooqOrderRepositoryAdapter.java', /DSLContext/],
+    ['QueryDSL (JPA)', 'querydsl', 'QueryDslOrderRepositoryAdapter.java', /JPAQueryFactory/]
+  ];
+
+  for (const [persistenceLayer, packageName, fileName, api] of cases) {
+    const answers = serviceAnswers({ persistenceLayer });
+    const files = renderGeneratedServiceFiles(answers, 'com.example.orders');
+    const adapterPath = `src/main/java/com/example/orders/infrastructure/${packageName}/${fileName}`;
+    const adapters = files.filter((file) => file.path.includes('/infrastructure/'));
+
+    assert.equal(persistencePackage(answers), packageName);
+    assert.equal(adapters.length, 1);
+    assert.equal(adapters[0].path, adapterPath);
+    assert.match(adapters[0].content, api);
+    assert.match(adapters[0].content, /implements OrderRepository/);
+  }
+});
+
+test('reactive generated files use Mono Flux and a DatabaseClient R2DBC adapter', () => {
+  const answers = serviceAnswers({
+    stackMode: 'Reactive',
+    persistenceLayer: 'Spring Data R2DBC'
+  });
+  const files = renderGeneratedServiceFiles(answers, 'com.example.orders');
+  const repository = generatedFile(files, 'src/main/java/com/example/orders/domain/OrderRepository.java');
+  const service = generatedFile(files, 'src/main/java/com/example/orders/application/OrderService.java');
+  const controller = generatedFile(files, 'src/main/java/com/example/orders/web/OrderController.java');
+  const adapter = generatedFile(files, 'src/main/java/com/example/orders/infrastructure/r2dbc/R2dbcOrderRepositoryAdapter.java');
+
+  assert.match(repository, /Mono<Order> save\(Order order\)/);
+  assert.match(repository, /Mono<Order> findById\(UUID id\)/);
+  assert.match(repository, /Flux<Order> findAll\(\)/);
+  assert.match(service, /Mono<Order> create\(String name\)/);
+  assert.match(controller, /Mono<ResponseEntity<Order>>/);
+  assert.match(controller, /Flux<Order>/);
+  assert.match(adapter, /DatabaseClient/);
+  assert.match(adapter, /implements OrderRepository/);
+  assert.doesNotMatch(adapter, /JdbcTemplate|EntityManager/);
+});
+
+test('reactive jOOQ adapter configures DSLContext from the R2DBC ConnectionFactory', () => {
+  const answers = serviceAnswers({
+    stackMode: 'Reactive',
+    persistenceLayer: 'jOOQ'
+  });
+  const files = renderGeneratedServiceFiles(answers, 'com.example.orders');
+  const adapter = generatedFile(files, 'src/main/java/com/example/orders/infrastructure/jooq/JooqOrderRepositoryAdapter.java');
+
+  assert.match(adapter, /io\.r2dbc\.spi\.ConnectionFactory/);
+  assert.match(adapter, /DSLContext dslContext\(ConnectionFactory connectionFactory\)/);
+  assert.match(adapter, /configuration\.set\(connectionFactory\)/);
+  assert.match(adapter, /configuration\.set\(SQLDialect\.POSTGRES\)/);
+  assert.match(adapter, /Flux\.from\(/);
+  assert.match(adapter, /Mono\.from\(/);
+  assert.doesNotMatch(adapter, /DataSource|java\.sql\.Connection|spring-boot-starter-jooq/);
+});
+
+test('JPA adapters use version-aware javax and jakarta persistence imports', () => {
+  const boot2 = serviceAnswers({ springBootVersion: '2.7.18' });
+  const boot3 = serviceAnswers({ springBootVersion: '3.5.4' });
+  const boot2Adapter = generatedFile(
+    renderGeneratedServiceFiles(boot2, 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/jpa/JpaOrderRepositoryAdapter.java'
+  );
+  const boot3Adapter = generatedFile(
+    renderGeneratedServiceFiles(boot3, 'com.example.orders'),
+    'src/main/java/com/example/orders/infrastructure/jpa/JpaOrderRepositoryAdapter.java'
+  );
+
+  assert.equal(javaPersistenceImport(boot2), 'javax.persistence');
+  assert.equal(javaPersistenceImport(boot3), 'jakarta.persistence');
+  assert.match(boot2Adapter, /import javax\.persistence\.Entity;/);
+  assert.doesNotMatch(boot2Adapter, /jakarta\.persistence/);
+  assert.match(boot3Adapter, /import jakarta\.persistence\.Entity;/);
+  assert.doesNotMatch(boot3Adapter, /javax\.persistence/);
+});
 
 test('renders the QueryDSL Jakarta API and processor in Maven output', () => {
   const pom = renderPomXml(queryDslAnswers('Maven'));

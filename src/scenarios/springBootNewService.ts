@@ -2,7 +2,10 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { createWorkspaceDirectory, resolveWorkspacePath } from './fileSafety';
 import { chooseFileWriteDecision, writeWorkspaceFileWithExplicitOverwrite } from './fileWriter';
+import { renderGeneratedServiceFiles } from './springBootServiceTemplates';
 import { Scenario } from './types';
+
+export { javaPersistenceImport, persistencePackage, renderGeneratedServiceFiles } from './springBootServiceTemplates';
 
 export type StackMode = 'Reactive' | 'Non-Reactive';
 type BuildTool = 'Maven' | 'Gradle';
@@ -15,7 +18,7 @@ const QUERYDSL_VERSION = '5.1.0';
 const JAKARTA_PERSISTENCE_API_VERSION = '3.1.0';
 const JAVAX_PERSISTENCE_API_VERSION = '2.2';
 
-interface SpringServiceAnswers {
+export interface SpringServiceAnswers {
   stackMode: StackMode;
   springBootVersion: string;
   serviceName: string;
@@ -75,7 +78,8 @@ export const createSpringBootServiceScenario: Scenario = {
         content: renderMainClass(appPackage, className)
       },
       { path: 'src/main/resources/application.yml', content: renderApplicationYaml(answers) },
-      { path: 'ARCHITECTURE_NOTES.md', content: renderArchitectureNotes(answers, appPackage) }
+      { path: 'ARCHITECTURE_NOTES.md', content: renderArchitectureNotes(answers, appPackage) },
+      ...renderGeneratedServiceFiles(answers, appPackage)
     ];
 
     let createdCount = 0;
