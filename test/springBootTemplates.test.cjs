@@ -124,7 +124,7 @@ test('reactive Cucumber steps and unit test use Mono and Flux repository contrac
   assert.match(unitTest, /created\.block\(\)/);
 });
 
-test('Maven executes the generated Cucumber scenario and reports all steps', { timeout: 120_000 }, (t) => {
+test('Maven executes and reports generated Cucumber success and failure', { timeout: 120_000 }, (t) => {
   const mavenVersion = spawnSync('mvn', ['--version'], { encoding: 'utf8' });
   if (mavenVersion.error?.code === 'ENOENT') {
     t.skip('Maven is not installed');
@@ -157,11 +157,78 @@ test('Maven executes the generated Cucumber scenario and reports all steps', { t
     fs.writeFileSync(destination, file.content);
   }
 
-  const mavenTest = spawnSync(
+  const runGeneratedMavenTest = () => spawnSync(
     'mvn',
-    ['-q', 'test', '-Dcucumber.plugin=json:target/cucumber.json'],
+    ['-q', 'clean', 'test', '-Dcucumber.plugin=json:target/cucumber.json'],
     { cwd: projectDirectory, encoding: 'utf8', timeout: 120_000 }
   );
+  const stepDefinitionsPath = path.join(
+    projectDirectory,
+    'src/test/java/com/example/orders/OrderStepDefinitions.java'
+  );
+  const generatedStepDefinitions = fs.readFileSync(stepDefinitionsPath, 'utf8');
+  const failureMessage = 'Intentional Cucumber smoke-test failure';
+  const failingStepDefinitions = generatedStepDefinitions.replace(
+    '        assertEquals(requestedName, created.name());',
+    `        throw new AssertionError("${failureMessage}");`
+  );
+  assert.notEqual(
+    failingStepDefinitions,
+    generatedStepDefinitions,
+    'Expected to alter the generated Then step'
+  );
+
+  let failingMavenTest;
+  fs.writeFileSync(stepDefinitionsPath, failingStepDefinitions);
+  try {
+    failingMavenTest = runGeneratedMavenTest();
+  } finally {
+    fs.writeFileSync(stepDefinitionsPath, generatedStepDefinitions);
+  }
+  assert.equal(
+    failingMavenTest.error,
+    undefined,
+    `Unable to run the failing generated Maven project: ${failingMavenTest.error}`
+  );
+  assert.equal(
+    typeof failingMavenTest.status,
+    'number',
+    `Failing generated Maven project did not exit normally:\n${failingMavenTest.stdout}${failingMavenTest.stderr}`
+  );
+  assert.notEqual(
+    failingMavenTest.status,
+    0,
+    'Maven must fail when a generated Cucumber step fails'
+  );
+
+  const surefireReportPath = path.join(
+    projectDirectory,
+    'target/surefire-reports/TEST-com.example.orders.CucumberTest.xml'
+  );
+  const failingSurefireReport = fs.readFileSync(surefireReportPath, 'utf8');
+  const failingScenarioCount = failingSurefireReport.match(
+    /<testsuite[^>]*\btests="(\d+)"/
+  )?.[1];
+  const failingScenarioFailures = failingSurefireReport.match(
+    /<testsuite[^>]*\bfailures="(\d+)"/
+  )?.[1];
+  assert.equal(failingScenarioCount, '1');
+  assert.equal(failingScenarioFailures, '1');
+  assert.match(failingSurefireReport, new RegExp(failureMessage));
+
+  const failingCucumberReport = JSON.parse(
+    fs.readFileSync(path.join(projectDirectory, 'target/cucumber.json'), 'utf8')
+  );
+  const failingScenarios = failingCucumberReport.flatMap((feature) => feature.elements ?? []);
+  assert.equal(failingScenarios.length, 1);
+  assert.equal(failingScenarios[0].steps.length, 3);
+  assert.deepEqual(
+    failingScenarios[0].steps.map((step) => step.result.status),
+    ['passed', 'passed', 'failed']
+  );
+  t.diagnostic(`intentional failing Maven exit: ${failingMavenTest.status}`);
+
+  const mavenTest = runGeneratedMavenTest();
   assert.equal(
     mavenTest.status,
     0,
@@ -169,10 +236,7 @@ test('Maven executes the generated Cucumber scenario and reports all steps', { t
   );
 
   const surefireReport = fs.readFileSync(
-    path.join(
-      projectDirectory,
-      'target/surefire-reports/TEST-com.example.orders.CucumberTest.xml'
-    ),
+    surefireReportPath,
     'utf8'
   );
   const surefireScenarioCount = surefireReport.match(
