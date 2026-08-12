@@ -15,6 +15,7 @@ const {
   SPRING_BOOT_VERSION,
   defaultAggregateName,
   persistenceOptions,
+  renderApplicationYaml,
   renderGradle,
   renderPomXml,
   validateAggregateName,
@@ -182,4 +183,58 @@ test('adds R2DBC support and driver for reactive jOOQ', () => {
   assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-jooq"\)/);
   assert.match(gradle, /implementation\("org\.springframework\.boot:spring-boot-starter-data-r2dbc"\)/);
   assert.match(gradle, /runtimeOnly\("org\.postgresql:r2dbc-postgresql"\)/);
+});
+
+test('renders reactive application configuration with an R2DBC URL', () => {
+  const yaml = renderApplicationYaml({
+    ...queryDslAnswers('Maven'),
+    stackMode: 'Reactive',
+    persistenceLayer: 'Spring Data R2DBC'
+  });
+
+  assert.match(yaml, /r2dbc:\n    url: r2dbc:postgresql:\/\/localhost:5432\/appdb/);
+  assert.doesNotMatch(yaml, /datasource:/);
+  assert.doesNotMatch(yaml, /jdbc:/);
+});
+
+test('adds the JDBC migration driver and migration URL for reactive Flyway', () => {
+  const answers = {
+    ...queryDslAnswers('Maven'),
+    stackMode: 'Reactive',
+    persistenceLayer: 'Spring Data R2DBC',
+    migrationTool: 'Flyway'
+  };
+  const pom = renderPomXml(answers);
+  const yaml = renderApplicationYaml(answers);
+
+  assert.match(pom, /<artifactId>r2dbc-postgresql<\/artifactId>/);
+  assert.match(pom, /<artifactId>postgresql<\/artifactId>[\s\S]*<scope>runtime<\/scope>/);
+  assert.match(yaml, /flyway:\n    enabled: true\n    url: jdbc:postgresql:\/\/localhost:5432\/appdb/);
+});
+
+test('adds the JDBC migration driver and migration URL for reactive Liquibase', () => {
+  const answers = {
+    ...queryDslAnswers('Gradle'),
+    stackMode: 'Reactive',
+    persistenceLayer: 'jOOQ',
+    migrationTool: 'Liquibase'
+  };
+  const gradle = renderGradle(answers);
+  const yaml = renderApplicationYaml(answers);
+
+  assert.match(gradle, /runtimeOnly\("org\.postgresql:postgresql"\)/);
+  assert.match(yaml, /liquibase:\n    enabled: true\n    url: jdbc:postgresql:\/\/localhost:5432\/appdb/);
+});
+
+test('declares reactive jOOQ ConnectionFactory wiring contract', () => {
+  const answers = {
+    ...queryDslAnswers('Maven'),
+    stackMode: 'Reactive',
+    persistenceLayer: 'jOOQ'
+  };
+  const yaml = renderApplicationYaml(answers);
+  const gradle = renderGradle({ ...answers, buildTool: 'Gradle' });
+
+  assert.match(yaml, /jooq:\n    sql-dialect: POSTGRES/);
+  assert.match(gradle, /spring-boot-starter-data-r2dbc/);
 });

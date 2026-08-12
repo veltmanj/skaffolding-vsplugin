@@ -325,13 +325,15 @@ public class ${className} {
 `;
 }
 
-function renderApplicationYaml(a: SpringServiceAnswers): string {
-  const db = dbYamlBlock(a.database);
-  const migration = migrationYamlBlock(a.migrationTool);
+export function renderApplicationYaml(a: SpringServiceAnswers): string {
+  const reactivePersistence = a.stackMode === 'Reactive' && a.persistenceLayer !== 'None';
+  const db = a.persistenceLayer === 'None' ? '' : reactivePersistence ? r2dbcYamlBlock(a.database) : dbYamlBlock(a.database);
+  const jooq = reactivePersistence && a.persistenceLayer === 'jOOQ' ? jooqYamlBlock(a.database) : '';
+  const migration = migrationYamlBlock(a.migrationTool, a.database, a.stackMode === 'Reactive');
   return `spring:
   application:
     name: ${a.serviceName}
-${a.persistenceLayer === 'None' ? '' : db}${migration}`;
+${db}${jooq}${migration}`;
 }
 
 function renderArchitectureNotes(a: SpringServiceAnswers, pkg: string): string {
@@ -381,8 +383,12 @@ function buildDependencyBlocks(a: SpringServiceAnswers): string {
   if (a.persistenceLayer === 'Spring Data R2DBC') {
     lines.push(dependencyXml('spring-boot-starter-data-r2dbc'));
   }
+  const reactivePersistence = a.stackMode === 'Reactive' && a.persistenceLayer !== 'None';
   if (a.persistenceLayer !== 'None') {
-    lines.push(driverDependencyXml(a.database, a.stackMode === 'Reactive'));
+    lines.push(driverDependencyXml(a.database, reactivePersistence));
+  }
+  if (a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
+    lines.push(driverDependencyXml(a.database, false));
   }
   if (a.migrationTool === 'Flyway') {
     lines.push(dependencyXml('flyway-core', 'org.flywaydb'));
@@ -420,8 +426,12 @@ function buildGradleDependencies(a: SpringServiceAnswers): string {
   if (a.persistenceLayer === 'Spring Data R2DBC') {
     lines.push(gradleDependency('org.springframework.boot:spring-boot-starter-data-r2dbc'));
   }
+  const reactivePersistence = a.stackMode === 'Reactive' && a.persistenceLayer !== 'None';
   if (a.persistenceLayer !== 'None') {
-    lines.push(gradleDependency(driverCoordinate(a.database, a.stackMode === 'Reactive'), 'runtimeOnly'));
+    lines.push(gradleDependency(driverCoordinate(a.database, reactivePersistence), 'runtimeOnly'));
+  }
+  if (a.stackMode === 'Reactive' && a.migrationTool !== 'None') {
+    lines.push(gradleDependency(driverCoordinate(a.database, false), 'runtimeOnly'));
   }
   if (a.migrationTool === 'Flyway') {
     lines.push(gradleDependency('org.flywaydb:flyway-core'));
@@ -520,14 +530,46 @@ function dbYamlBlock(database: Database): string {
   return mapping[database];
 }
 
-function migrationYamlBlock(tool: MigrationTool): string {
+function r2dbcYamlBlock(database: Database): string {
+  const mapping: Record<Database, string> = {
+    PostgreSQL: `  r2dbc:\n    url: r2dbc:postgresql://localhost:5432/appdb\n    username: app\n    password: app\n`,
+    H2: `  r2dbc:\n    url: r2dbc:h2:mem:///appdb\n    username: sa\n    password: ""\n`,
+    'MSSQL Server': `  r2dbc:\n    url: r2dbc:sqlserver://localhost:1433/appdb\n    username: sa\n    password: yourStrong(!)Password\n`,
+    Oracle: `  r2dbc:\n    url: r2dbc:oracle://localhost:1521/FREEPDB1\n    username: app\n    password: app\n`
+  };
+  return mapping[database];
+}
+
+function jooqYamlBlock(database: Database): string {
+  const dialect: Record<Database, string> = {
+    PostgreSQL: 'POSTGRES',
+    H2: 'H2',
+    'MSSQL Server': 'SQLSERVER',
+    Oracle: 'ORACLE'
+  };
+  return `  jooq:\n    sql-dialect: ${dialect[database]}\n`;
+}
+
+function migrationYamlBlock(tool: MigrationTool, database: Database, reactive: boolean): string {
+  const jdbc = reactive ? jdbcMigrationYamlBlock(database) : '';
   if (tool === 'Flyway') {
-    return `  flyway:\n    enabled: true\n`;
+    return `  flyway:\n    enabled: true\n${jdbc}`;
   }
   if (tool === 'Liquibase') {
-    return `  liquibase:\n    enabled: true\n`;
+    return `  liquibase:\n    enabled: true\n${jdbc}`;
   }
   return '';
+}
+
+function jdbcMigrationYamlBlock(database: Database): string {
+  const mapping: Record<Database, { url: string; user: string; password: string }> = {
+    PostgreSQL: { url: 'jdbc:postgresql://localhost:5432/appdb', user: 'app', password: 'app' },
+    H2: { url: 'jdbc:h2:mem:appdb;DB_CLOSE_DELAY=-1', user: 'sa', password: '' },
+    'MSSQL Server': { url: 'jdbc:sqlserver://localhost:1433;databaseName=appdb;encrypt=true;trustServerCertificate=true', user: 'sa', password: 'yourStrong(!)Password' },
+    Oracle: { url: 'jdbc:oracle:thin:@localhost:1521/FREEPDB1', user: 'app', password: 'app' }
+  };
+  const selected = mapping[database];
+  return `    url: ${selected.url}\n    user: ${selected.user}\n    password: ${selected.password}\n`;
 }
 
 function normalizePackage(value: string): string {
